@@ -9,7 +9,10 @@ local LOCAL_GROUP = var["-LOCAL_GROUP"]
 local REMOTE_GROUP = var["-REMOTE_GROUP"]
 local REMOTE_PROXY_SERVER = var["-REMOTE_PROXY_SERVER"]
 local USE_DEFAULT_DNS = var["-USE_DEFAULT_DNS"]
+local REMOTE_DNS = var["-REMOTE_DNS"]
 local TUN_DNS = var["-TUN_DNS"]
+local DNS_MODE = var["-DNS_MODE"]
+local REMOTE_FAKEDNS = var["-REMOTE_FAKEDNS"]
 local TCP_NODE = var["-TCP_NODE"]
 local USE_DIRECT_LIST = var["-USE_DIRECT_LIST"]
 local USE_PROXY_LIST = var["-USE_PROXY_LIST"]
@@ -20,10 +23,6 @@ local DEFAULT_PROXY_MODE = var["-DEFAULT_PROXY_MODE"]
 local NO_PROXY_IPV6 = var["-NO_PROXY_IPV6"]
 local NO_LOGIC_LOG = var["-NO_LOGIC_LOG"]
 local NFTFLAG = var["-NFTFLAG"]
-local CACHE_PATH = api.CACHE_PATH
-local CACHE_FLAG = "smartdns_" .. FLAG
-local CACHE_DNS_PATH = CACHE_PATH .. "/" .. CACHE_FLAG
-local CACHE_DNS_FILE = CACHE_DNS_PATH .. ".conf"
 
 local uci = api.uci
 local sys = api.sys
@@ -34,6 +33,7 @@ local TMP_PATH = "/tmp/etc/" .. appname
 local TMP_ACL_PATH = TMP_PATH .. "/acl"
 local RULES_PATH = "/usr/share/" .. appname .. "/rules"
 local FLAG_PATH = TMP_ACL_PATH .. "/" .. FLAG
+local TMP_CONF_FILE = FLAG_PATH .. "/smartdns.conf"
 local config_lines = {}
 local tmp_lines = {}
 local USE_GEOVIEW = uci:get(appname, "@global_rules[0]", "enable_geoview")
@@ -104,10 +104,6 @@ if not fs.access(FLAG_PATH) then
 	fs.mkdir(FLAG_PATH)
 end
 
-if not fs.access(CACHE_PATH) then
-	fs.mkdir(CACHE_PATH)
-end
-
 local LOCAL_EXTEND_ARG = ""
 if LOCAL_GROUP == "nil" then
 	LOCAL_GROUP = nil
@@ -156,8 +152,8 @@ end
 
 if not REMOTE_GROUP or REMOTE_GROUP == "nil" then
 	REMOTE_GROUP = "passwall_proxy"
-	if TUN_DNS then
-		TUN_DNS = TUN_DNS:gsub("#", ":")
+	if REMOTE_DNS then
+		REMOTE_DNS = REMOTE_DNS:gsub("#", ":")
 	end
 	sys.call('sed -i "/passwall/d" /etc/smartdns/custom.conf >/dev/null 2>&1')
 end
@@ -166,10 +162,10 @@ local proxy_server_name = "passwall-proxy-server"
 config_lines = {
 	"force-qtype-SOA 65",
 	"server 114.114.114.114 -bootstrap-dns",
-	string.format("proxy-server socks5://%s -name %s", REMOTE_PROXY_SERVER, proxy_server_name)
+	DNS_MODE == "socks" and string.format("proxy-server socks5://%s -name %s", REMOTE_PROXY_SERVER, proxy_server_name) or nil
 }
-if true then
-	string.gsub(TUN_DNS, '[^' .. "|" .. ']+', function(w)
+if DNS_MODE == "socks" then
+	string.gsub(REMOTE_DNS, '[^' .. "|" .. ']+', function(w)
 		local server_dns = w
 		local server_param = string.format("server %s -group %s -proxy %s", "%s", REMOTE_GROUP, proxy_server_name)
 		server_param = server_param .. " -exclude-default-group"
@@ -202,10 +198,15 @@ if true then
 		server_param = string.format(server_param, server_dns)
 		table.insert(config_lines, server_param)
 	end)
+	REMOTE_FAKEDNS = 0
+else
+	local server_param = string.format("server %s -group %s -exclude-default-group", TUN_DNS:gsub("#", ":"), REMOTE_GROUP)
+	table.insert(config_lines, server_param)
+	log("  - " .. DNS_MODE:gsub("^%l",string.upper) .. " " .. TUN_DNS .. " -> " .. REMOTE_GROUP)
 end
 
 --设置默认 DNS 分组(托底组)
-local DEFAULT_DNS_GROUP = (USE_DEFAULT_DNS == "direct" and LOCAL_GROUP) or 
+local DEFAULT_DNS_GROUP = (USE_DEFAULT_DNS == "direct" and LOCAL_GROUP) or
                           (USE_DEFAULT_DNS == "remote" and REMOTE_GROUP)
 local only_global = (DEFAULT_PROXY_MODE == "proxy" and CHN_LIST == "0" and USE_GFW_LIST == "0") and 1 --没有启用中国列表和GFW列表时(全局)
 if only_global == 1 then
@@ -273,11 +274,13 @@ end
 local file_vpslist = TMP_ACL_PATH .. "/vpslist"
 if not is_file_nonzero(file_vpslist) then
 	local f_out = io.open(file_vpslist, "w")
+	local written_domains = {}
 	uci:foreach(appname, "nodes", function(t)
 		local function process_address(address)
 			if address == "engage.cloudflareclient.com" then return end
-			if datatypes.hostname(address) then
+			if datatypes.hostname(address) and not written_domains[address] then
 				f_out:write(address .. "\n")
+				written_domains[address] = true
 			end
 		end
 		process_address(t.address)
@@ -290,8 +293,12 @@ if is_file_nonzero(file_vpslist) then
 	tmp_lines = {
 		string.format("domain-set -name %s -file %s", domain_set_name, file_vpslist)
 	}
+	local sets = {
+		"#4:" .. setflag .. "passwall_vps",
+		"#6:" .. setflag .. "passwall_vps6"
+	}
 	local domain_rules_str = string.format('domain-rules /domain-set:%s/ %s', domain_set_name, LOCAL_GROUP and "-nameserver " .. LOCAL_GROUP or "")
-	domain_rules_str = domain_rules_str .. " " .. set_type .. " #4:" .. setflag .. "passwall_vpslist,#6:" .. setflag .. "passwall_vpslist6"
+	domain_rules_str = domain_rules_str .. " " .. set_type .. " " .. table.concat(sets, ",")
 	domain_rules_str = domain_rules_str .. (LOCAL_EXTEND_ARG ~= "" and " " .. LOCAL_EXTEND_ARG or "")
 	table.insert(tmp_lines, domain_rules_str)
 	insert_array_after(config_lines, tmp_lines, "#--8")
@@ -331,8 +338,12 @@ if USE_DIRECT_LIST == "1" and is_file_nonzero(file_direct_host) then
 	tmp_lines = {
 		string.format("domain-set -name %s -file %s", domain_set_name, file_direct_host)
 	}
+	local sets = {
+		"#4:" .. setflag .. "passwall_white",
+		"#6:" .. setflag .. "passwall_white6"
+	}
 	local domain_rules_str = string.format('domain-rules /domain-set:%s/ %s', domain_set_name, LOCAL_GROUP and "-nameserver " .. LOCAL_GROUP or "")
-	domain_rules_str = domain_rules_str .. " " .. set_type .. " #4:" .. setflag .. "passwall_whitelist,#6:" .. setflag .. "passwall_whitelist6"
+	domain_rules_str = domain_rules_str .. " " .. set_type .. " " .. table.concat(sets, ",")
 	domain_rules_str = domain_rules_str .. (LOCAL_EXTEND_ARG ~= "" and " " .. LOCAL_EXTEND_ARG or "")
 	table.insert(tmp_lines, domain_rules_str)
 	insert_array_after(config_lines, tmp_lines, "#--6")
@@ -375,11 +386,15 @@ if USE_PROXY_LIST == "1" and is_file_nonzero(file_proxy_host) then
 	local domain_rules_str = string.format('domain-rules /domain-set:%s/ -nameserver %s', domain_set_name, REMOTE_GROUP)
 	domain_rules_str = domain_rules_str .. " -speed-check-mode none"
 	domain_rules_str = domain_rules_str .. " -no-serve-expired"
+	local sets = {
+		"#4:" .. setflag .. "passwall_black"
+	}
 	if NO_PROXY_IPV6 == "1" then
 		domain_rules_str = domain_rules_str .. " -address #6"
-		domain_rules_str = domain_rules_str .. " " .. set_type .. " #4:" .. setflag .. "passwall_blacklist"
+		domain_rules_str = REMOTE_FAKEDNS ~= "1" and (domain_rules_str .. " " .. set_type .. " " .. table.concat(sets, ",")) or domain_rules_str
 	else
-		domain_rules_str = domain_rules_str .. " -d no " .. set_type .. " #4:" .. setflag .. "passwall_blacklist" .. ",#6:" .. setflag .. "passwall_blacklist6"
+		table.insert(sets, "#6:" .. setflag .. "passwall_black6")
+		domain_rules_str = REMOTE_FAKEDNS ~= "1" and (domain_rules_str .. " -d no " .. set_type .. " " .. table.concat(sets, ",")) or domain_rules_str
 	end
 	table.insert(tmp_lines, domain_rules_str)
 	insert_array_after(config_lines, tmp_lines, "#--5")
@@ -395,11 +410,15 @@ if USE_GFW_LIST == "1" and is_file_nonzero(RULES_PATH .. "/gfwlist") then
 	local domain_rules_str = string.format('domain-rules /domain-set:%s/ -nameserver %s', domain_set_name, REMOTE_GROUP)
 	domain_rules_str = domain_rules_str .. " -speed-check-mode none"
 	domain_rules_str = domain_rules_str .. " -no-serve-expired"
+	local sets = {
+		"#4:" .. setflag .. "passwall_gfw"
+	}
 	if NO_PROXY_IPV6 == "1" then
 		domain_rules_str = domain_rules_str .. " -address #6"
-		domain_rules_str = domain_rules_str .. " " .. set_type .. " #4:" .. setflag .. "passwall_gfwlist"
+		domain_rules_str = REMOTE_FAKEDNS ~= "1" and (domain_rules_str .. " " .. set_type .. " " .. table.concat(sets, ",")) or domain_rules_str
 	else
-		domain_rules_str = domain_rules_str .. " -d no " .. set_type .. " #4:" .. setflag .. "passwall_gfwlist" .. ",#6:" .. setflag .. "passwall_gfwlist6"
+		table.insert(sets, "#6:" .. setflag .. "passwall_gfw6")
+		domain_rules_str = REMOTE_FAKEDNS ~= "1" and (domain_rules_str .. " -d no " .. set_type .. " " .. table.concat(sets, ",")) or domain_rules_str
 	end
 	table.insert(tmp_lines, domain_rules_str)
 	insert_array_after(config_lines, tmp_lines, "#--1")
@@ -414,8 +433,12 @@ if CHN_LIST ~= "0" and is_file_nonzero(RULES_PATH .. "/chnlist") then
 	}
 
 	if CHN_LIST == "direct" then
+		local sets = {
+			"#4:" .. setflag .. "passwall_chn",
+			"#6:" .. setflag .. "passwall_chn6"
+		}
 		local domain_rules_str = string.format('domain-rules /domain-set:%s/ %s', domain_set_name, LOCAL_GROUP and "-nameserver " .. LOCAL_GROUP or "")
-		domain_rules_str = domain_rules_str .. " " .. set_type .. " #4:" .. setflag .. "passwall_chnroute,#6:" .. setflag .. "passwall_chnroute6"
+		domain_rules_str = domain_rules_str .. " " .. set_type .. " " .. table.concat(sets, ",")
 		domain_rules_str = domain_rules_str .. (LOCAL_EXTEND_ARG ~= "" and " " .. LOCAL_EXTEND_ARG or "")
 		table.insert(tmp_lines, domain_rules_str)
 		insert_array_after(config_lines, tmp_lines, "#--2")
@@ -427,11 +450,15 @@ if CHN_LIST ~= "0" and is_file_nonzero(RULES_PATH .. "/chnlist") then
 		local domain_rules_str = string.format('domain-rules /domain-set:%s/ -nameserver %s', domain_set_name, REMOTE_GROUP)
 		domain_rules_str = domain_rules_str .. " -speed-check-mode none"
 		domain_rules_str = domain_rules_str .. " -no-serve-expired"
+		local sets = {
+			"#4:" .. setflag .. "passwall_chn"
+		}
 		if NO_PROXY_IPV6 == "1" then
 			domain_rules_str = domain_rules_str .. " -address #6"
-			domain_rules_str = domain_rules_str .. " " .. set_type .. " #4:" .. setflag .. "passwall_chnroute"
+			domain_rules_str = REMOTE_FAKEDNS ~= "1" and (domain_rules_str .. " " .. set_type .. " " .. table.concat(sets, ",")) or domain_rules_str
 		else
-			domain_rules_str = domain_rules_str .. " -d no " .. set_type .. " #4:" .. setflag .. "passwall_chnroute" .. ",#6:" .. setflag .. "passwall_chnroute6"
+			table.insert(sets, "#6:" .. setflag .. "passwall_chn6")
+			domain_rules_str = REMOTE_FAKEDNS ~= "1" and (domain_rules_str .. " -d no " .. set_type .. " " .. table.concat(sets, ",")) or domain_rules_str
 		end
 		table.insert(tmp_lines, domain_rules_str)
 		insert_array_after(config_lines, tmp_lines, "#--2")
@@ -525,9 +552,17 @@ if uci:get(appname, TCP_NODE, "protocol") == "_shunt" then
 		}
 		local domain_rules_str = string.format('domain-rules /domain-set:%s/ %s', domain_set_name, LOCAL_GROUP and "-nameserver " .. LOCAL_GROUP or "")
 		if USE_DIRECT_LIST == "1" then
-			domain_rules_str = domain_rules_str .. " " .. set_type .. " #4:" .. setflag .. "passwall_whitelist,#6:" .. setflag .. "passwall_whitelist6"
+			local sets = {
+				"#4:" .. setflag .. "passwall_white",
+				"#6:" .. setflag .. "passwall_white6"
+			}
+			domain_rules_str = domain_rules_str .. " " .. set_type .. " " .. table.concat(sets, ",")
 		else
-			domain_rules_str = domain_rules_str .. " " .. set_type .. " #4:" .. setflag .. "passwall_shuntlist,#6:" .. setflag .. "passwall_shuntlist6"
+			local sets = {
+				"#4:" .. setflag .. "passwall_shunt",
+				"#6:" .. setflag .. "passwall_shunt6"
+			}
+			domain_rules_str = domain_rules_str .. " " .. set_type .. " " .. table.concat(sets, ",")
 		end
 		domain_rules_str = domain_rules_str .. (LOCAL_EXTEND_ARG ~= "" and " " .. LOCAL_EXTEND_ARG or "")
 		table.insert(tmp_lines, domain_rules_str)
@@ -542,11 +577,19 @@ if uci:get(appname, TCP_NODE, "protocol") == "_shunt" then
 		local domain_rules_str = string.format('domain-rules /domain-set:%s/ -nameserver %s', domain_set_name, REMOTE_GROUP)
 		domain_rules_str = domain_rules_str .. " -speed-check-mode none"
 		domain_rules_str = domain_rules_str .. " -no-serve-expired"
+		local sets = {
+			"#4:" .. setflag .. "passwall_shunt"
+		}
 		if NO_PROXY_IPV6 == "1" then
 			domain_rules_str = domain_rules_str .. " -address #6"
-			domain_rules_str = domain_rules_str .. " " .. set_type .. " #4:" .. setflag .. "passwall_shuntlist"
+			domain_rules_str = (not only_global and REMOTE_FAKEDNS == "1")
+					and domain_rules_str
+					or (domain_rules_str .. " " .. set_type .. " " .. table.concat(sets, ","))
 		else
-			domain_rules_str = domain_rules_str .. " -d no " .. set_type .. " #4:" .. setflag .. "passwall_shuntlist" .. ",#6:" .. setflag .. "passwall_shuntlist6"
+			table.insert(sets, "#6:" .. setflag .. "passwall_shunt6")
+			domain_rules_str = (not only_global and REMOTE_FAKEDNS == "1")
+					and domain_rules_str
+					or (domain_rules_str .. " -d no " .. set_type .. " " .. table.concat(sets, ","))
 		end
 		table.insert(tmp_lines, domain_rules_str)
 		insert_array_after(config_lines, tmp_lines, "#--3")
@@ -555,7 +598,7 @@ if uci:get(appname, TCP_NODE, "protocol") == "_shunt" then
 end
 
 if #config_lines > 0 then
-	local f_out = io.open(CACHE_DNS_FILE, "w")
+	local f_out = io.open(TMP_CONF_FILE, "w")
 	for i = 1, #config_lines do
 		line = config_lines[i]
 		if line ~= "" and not line:find("^#--") then
@@ -569,6 +612,6 @@ if DEFAULT_DNS_GROUP then
 	log(string.format("  - 默认 DNS 分组：%s", DEFAULT_DNS_GROUP))
 end
 
-fs.symlink(CACHE_DNS_FILE, SMARTDNS_CONF)
+fs.symlink(TMP_CONF_FILE, SMARTDNS_CONF)
 sys.call(string.format('echo "conf-file %s" >> /etc/smartdns/custom.conf', string.gsub(SMARTDNS_CONF, appname, appname .. "*")))
 log("  - 请让SmartDNS作为Dnsmasq的上游或重定向！")

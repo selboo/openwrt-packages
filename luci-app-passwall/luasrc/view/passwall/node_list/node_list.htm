@@ -29,14 +29,24 @@ table td, .table .td {
 	color: red !important;
 }
 
+._now_use_bg {
+	background: #5e72e445 !important;
+}
+
 .ping a:hover{
 	text-decoration : underline;
+}
+
+@media (prefers-color-scheme: dark) {
+    ._now_use_bg {
+        background: #4a90e2 !important;
+    }
 }
 </style>
 
 <script type="text/javascript">
 	//<![CDATA[
-	let auto_detection_time = "<%=api.uci_get_type("global_other", "auto_detection_time", "0")%>"
+	let auto_detection_time = "<%=api.uci_get_type("@global_other[0]", "auto_detection_time", "0")%>"
 	
 	var node_list = {};
 	var node_count = 0;
@@ -212,6 +222,7 @@ table td, .table .td {
 					var dom = document.getElementById("cbi-passwall-" + id);
 					if (dom) {
 						dom.title = "当前使用的 TCP 节点";
+						dom.classList.add("_now_use_bg");
 						//var v = "<a style='color: red'>当前TCP节点：</a>" + document.getElementById("cbid.passwall." + id + ".remarks").value;
 						//document.getElementById("cbi-passwall-" + id + "-remarks").innerHTML = v;
 						var dom_remarks = document.getElementById("cbi-passwall-" + id + "-remarks");
@@ -229,6 +240,7 @@ table td, .table .td {
 						} else {
 							dom.title = "当前使用的 UDP 节点";
 						}
+						dom.classList.add("_now_use_bg");
 						var dom_remarks = document.getElementById("cbi-passwall-" + id + "-remarks");
 						if (dom_remarks) {
 							dom_remarks.classList.add("_now_use");

@@ -6,6 +6,8 @@ if not api.finded_com("xray") then
 	return
 end
 
+local fs = api.fs
+
 local type_name = "Xray"
 
 local option_prefix = "xray_"
@@ -149,8 +151,26 @@ o = s:option(Value, _n("reality_dest"), translate("Dest"))
 o.default = "google.com:443"
 o:depends({ [_n("reality")] = true })
 
-o = s:option(Value, _n("reality_serverNames"), translate("serverNames"))
+o = s:option(DynamicList, _n("reality_serverNames"), translate("serverNames"))
 o:depends({ [_n("reality")] = true })
+function o.write(self, section, value)
+	local t = {}
+	local t2 = {}
+	if type(value) == "table" then
+		local x
+		for _, x in ipairs(value) do
+			if x and #x > 0 then
+				if not t2[x] then
+					t2[x] = x
+					t[#t+1] = x
+				end
+			end
+		end
+	else
+		t = { value }
+	end
+	return DynamicList.write(self, section, t)
+end
 
 o = s:option(ListValue, _n("alpn"), translate("alpn"))
 o.default = "h2,http/1.1"
@@ -174,7 +194,7 @@ o.default = m:get(s.section, "tls_certificateFile") or "/etc/config/ssl/" .. arg
 o:depends({ [_n("tls")] = true, [_n("reality")] = false })
 o.validate = function(self, value, t)
 	if value and value ~= "" then
-		if not nixio.fs.access(value) then
+		if not fs.access(value) then
 			return nil, translate("Can't find this file!")
 		else
 			return value
@@ -188,7 +208,7 @@ o.default = m:get(s.section, "tls_keyFile") or "/etc/config/ssl/" .. arg[1] .. "
 o:depends({ [_n("tls")] = true, [_n("reality")] = false })
 o.validate = function(self, value, t)
 	if value and value ~= "" then
-		if not nixio.fs.access(value) then
+		if not fs.access(value) then
 			return nil, translate("Can't find this file!")
 		else
 			return value
@@ -201,7 +221,6 @@ o = s:option(ListValue, _n("transport"), translate("Transport"))
 o:value("raw", "RAW")
 o:value("mkcp", "mKCP")
 o:value("ws", "WebSocket")
-o:value("h2", "HTTP/2")
 o:value("ds", "DomainSocket")
 o:value("quic", "QUIC")
 o:value("grpc", "gRPC")
@@ -244,14 +263,6 @@ o:depends({ [_n("transport")] = "xhttp" })
 o = s:option(Value, _n("xhttp_maxconcurrentuploads"), translate("maxConcurrentUploads"))
 o.default = "10"
 o:depends({ [_n("transport")] = "xhttp" })
-
--- [[ HTTP/2部分 ]]--
-
-o = s:option(Value, _n("h2_host"), translate("HTTP/2 Host"))
-o:depends({ [_n("transport")] = "h2" })
-
-o = s:option(Value, _n("h2_path"), translate("HTTP/2 Path"))
-o:depends({ [_n("transport")] = "h2" })
 
 -- [[ TCP部分 ]]--
 
