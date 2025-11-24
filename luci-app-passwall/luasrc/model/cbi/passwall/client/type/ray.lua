@@ -315,6 +315,10 @@ o = s:option(Value, _n("encryption"), translate("Encrypt Method") .. " (encrypti
 o.default = "none"
 o.placeholder = "none"
 o:depends({ [_n("protocol")] = "vless" })
+o.validate = function(self, value)
+	value = api.trim(value)
+	return (value == "" and "none" or value)
+end
 
 o = s:option(ListValue, _n("ss_method"), translate("Encrypt Method"))
 o.rewrite_option = "method"
@@ -339,8 +343,8 @@ o = s:option(ListValue, _n("flow"), translate("flow"))
 o.default = ""
 o:value("", translate("Disable"))
 o:value("xtls-rprx-vision")
-o:depends({ [_n("protocol")] = "vless", [_n("tls")] = true, [_n("transport")] = "raw" })
-o:depends({ [_n("protocol")] = "vless", [_n("tls")] = true, [_n("transport")] = "xhttp" })
+o:depends({ [_n("protocol")] = "vless", [_n("transport")] = "raw" })
+o:depends({ [_n("protocol")] = "vless", [_n("transport")] = "xhttp" })
 
 o = s:option(Flag, _n("tls"), translate("TLS"))
 o.default = 0
@@ -380,6 +384,9 @@ o:depends({ [_n("tls")] = true })
 
 o = s:option(Flag, _n("tls_allowInsecure"), translate("allowInsecure"), translate("Whether unsafe connections are allowed. When checked, Certificate validation will be skipped."))
 o.default = "0"
+o:depends({ [_n("tls")] = true, [_n("reality")] = false })
+
+o = s:option(Value, _n("tls_chain_fingerprint"), translate("TLS Chain Fingerprint (SHA256)"), translate("Once set, connects only when the server’s chain fingerprint matches."))
 o:depends({ [_n("tls")] = true, [_n("reality")] = false })
 
 o = s:option(Flag, _n("ech"), translate("ECH"))
