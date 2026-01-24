@@ -1,4 +1,5 @@
 -- Copyright (C) 2022-2025 xiaorouji
+-- Copyright (C) 2026 Openwrt-Passwall Organization
 
 module("luci.controller.passwall2", package.seeall)
 local api = require "luci.passwall2.api"
@@ -9,6 +10,7 @@ local util = require "luci.util"
 local i18n = require "luci.i18n"
 local fs = api.fs
 local jsonStringify = luci.jsonc.stringify
+local jsonParse = luci.jsonc.parse
 
 function index()
 	if not nixio.fs.access("/etc/config/passwall2") then
@@ -75,6 +77,7 @@ function index()
 	entry({"admin", "services", appname, "ping_node"}, call("ping_node")).leaf = true
 	entry({"admin", "services", appname, "urltest_node"}, call("urltest_node")).leaf = true
 	entry({"admin", "services", appname, "add_node"}, call("add_node")).leaf = true
+	entry({"admin", "services", appname, "update_node"}, call("update_node")).leaf = true
 	entry({"admin", "services", appname, "set_node"}, call("set_node")).leaf = true
 	entry({"admin", "services", appname, "copy_node"}, call("copy_node")).leaf = true
 	entry({"admin", "services", appname, "clear_all_nodes"}, call("clear_all_nodes")).leaf = true
@@ -89,6 +92,7 @@ function index()
 	entry({"admin", "services", appname, "subscribe_manual"}, call("subscribe_manual")).leaf = true
 	entry({"admin", "services", appname, "subscribe_manual_all"}, call("subscribe_manual_all")).leaf = true
 	entry({"admin", "services", appname, "flush_set"}, call("flush_set")).leaf = true
+	entry({"admin", "services", appname, "ip"}, call('check_ip')).leaf = true
 
 	--[[Components update]]
 	entry({"admin", "services", appname, "check_passwall2"}, call("app_check")).leaf = true
@@ -110,6 +114,71 @@ end
 local function http_write_json(content)
 	http.prepare_content("application/json")
 	http.write(jsonStringify(content or {code = 1}))
+end
+
+local function http_write_json_ok(data)
+	http.prepare_content("application/json")
+	http.write(jsonStringify({code = 1, data = data}))
+end
+
+local function http_write_json_error(data)
+	http.prepare_content("application/json")
+	http.write(jsonStringify({code = 0, data = data}))
+end
+
+function check_site(host, port)
+    local nixio = require "nixio"
+    local socket = nixio.socket("inet", "stream")
+    socket:setopt("socket", "rcvtimeo", 2)
+    socket:setopt("socket", "sndtimeo", 2)
+    local ret = socket:connect(host, port)
+    socket:close()
+    return ret
+end
+
+function get_ip_geo_info()
+    local result = luci.sys.exec('curl --retry 3 -m 10 -LfsA "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.183 Safari/537.36" http://ip-api.com/json/')
+    local json = require "luci.jsonc"
+    local info = json.parse(result)
+    
+    return {
+        flag = string.lower(info.countryCode) or "un",
+        country = get_country_name(info.countryCode) or "Unknown",
+        ip = info.query,
+        isp = info.isp
+    }
+end
+
+function get_country_name(countryCode)
+    local country_names = {
+        US = "美国", CN = "中国", JP = "日本", GB = "英国", DE = "德国",
+        FR = "法国", BR = "巴西", IT = "意大利", RU = "俄罗斯", CA = "加拿大",
+        KR = "韩国", ES = "西班牙", AU = "澳大利亚", MX = "墨西哥", ID = "印度尼西亚",
+        NL = "荷兰", TR = "土耳其", CH = "瑞士", SA = "沙特阿拉伯", SE = "瑞典",
+        PL = "波兰", BE = "比利时", AR = "阿根廷", NO = "挪威", AT = "奥地利",
+        TW = "台湾", ZA = "南非", TH = "泰国", DK = "丹麦", MY = "马来西亚",
+        PH = "菲律宾", SG = "新加坡", IE = "爱尔兰", HK = "香港", FI = "芬兰",
+        CL = "智利", PT = "葡萄牙", GR = "希腊", IL = "以色列", NZ = "新西兰",
+        CZ = "捷克", RO = "罗马尼亚", VN = "越南", UA = "乌克兰", HU = "匈牙利",
+        AE = "阿联酋", CO = "哥伦比亚", IN = "印度", EG = "埃及", PE = "秘鲁", TW = "台湾"
+    }
+    return country_names[countryCode]
+end
+
+function check_ip()
+    local e = {}
+    local port = 80
+    local geo_info = get_ip_geo_info(ip)
+    e.ip = geo_info.ip
+    e.flag = geo_info.flag
+    e.country = geo_info.country
+    e.isp = geo_info.isp
+    e.baidu = check_site('www.baidu.com', port)
+    e.taobao = check_site('www.taobao.com', port)
+    e.google = check_site('www.google.com', port)
+    e.youtube = check_site('www.youtube.com', port)
+    luci.http.prepare_content('application/json')
+    luci.http.write_json(e)
 end
 
 function reset_config()
@@ -345,6 +414,8 @@ function add_node()
 		uci:set(appname, uuid, "group", group)
 	end
 
+	uci:set(appname, uuid, "type", "Xray")
+
 	if redirect == "1" then
 		api.uci_save(uci, appname)
 		http.redirect(api.url("node_config", uuid))
@@ -352,6 +423,23 @@ function add_node()
 		api.uci_save(uci, appname, true, true)
 		http_write_json({result = uuid})
 	end
+end
+
+function update_node()
+	local id = http.formvalue("id") -- Node id
+	local data = http.formvalue("data") -- json new Data
+	if id and data then
+		local data_t = jsonParse(data) or {}
+		if next(data_t) then
+			for k, v in pairs(data_t) do
+				uci:set(appname, id, k, v)
+			end
+			api.uci_save(uci, appname)
+			http_write_json_ok()
+			return
+		end
+	end
+	http_write_json_error()
 end
 
 function set_node()

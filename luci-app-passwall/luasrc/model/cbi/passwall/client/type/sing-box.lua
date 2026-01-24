@@ -77,6 +77,7 @@ for k, e in ipairs(api.get_valid_nodes()) do
 			id = e[".name"],
 			remark = e["remark"],
 			type = e["type"],
+			address = e["address"],
 			chain_proxy = e["chain_proxy"],
 			group = e["group"]
 		}
@@ -155,7 +156,7 @@ o:value("https://www.google.com/generate_204", "Google")
 o:value("https://www.youtube.com/generate_204", "YouTube")
 o:value("https://connect.rom.miui.com/generate_204", "MIUI (CN)")
 o:value("https://connectivitycheck.platform.hicloud.com/generate_204", "HiCloud (CN)")
-o.default = "https://www.gstatic.com/generate_204"
+o.default = o.keylist[3]
 o.description = translate("The URL used to detect the connection status.")
 
 o = s:option(Value, _n("urltest_interval"), translate("Test interval"))
@@ -186,12 +187,13 @@ o:depends({ [_n("protocol")] = "_urltest" })
 o.default = "0"
 o.description = translate("Interrupt existing connections when the selected outbound has changed.") 
 
+local default_node = m.uci:get(appname, arg[1], "default_node") or "_direct"
 -- [[ 分流模块 ]]
 if #nodes_table > 0 then
 	o = s:option(Flag, _n("preproxy_enabled"), translate("Preproxy"))
 	o:depends({ [_n("protocol")] = "_shunt" })
 
-	o = s:option(ListValue, _n("main_node"), string.format('<a style="color:red">%s</a>', translate("Preproxy Node")), translate("Set the node to be used as a pre-proxy. Each rule (including <code>Default</code>) has a separate switch that controls whether this rule uses the pre-proxy or not."))
+	o = s:option(ListValue, _n("main_node"), string.format('<a style="color:#FF8C00">%s</a>', translate("Preproxy Node")), translate("Set the node to be used as a pre-proxy. Each rule (including <code>Default</code>) has a separate switch that controls whether this rule uses the pre-proxy or not."))
 	o:depends({ [_n("protocol")] = "_shunt", [_n("preproxy_enabled")] = true })
 	o.template = appname .. "/cbi/nodes_listvalue"
 	o.group = {}
@@ -211,6 +213,9 @@ if #nodes_table > 0 then
 		o:value(v.id, v.remark)
 		o.group[#o.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 	end
+
+	o = s:option(Flag, _n("fakedns"), "FakeDNS", translate("Use FakeDNS work in the shunt domain that proxy."))
+	o:depends({ [_n("protocol")] = "_shunt" })
 end
 m.uci:foreach(appname, "shunt_rules", function(e)
 	if e[".name"] and e.remarks then
@@ -224,9 +229,17 @@ m.uci:foreach(appname, "shunt_rules", function(e)
 		o.group = {"","","",""}
 
 		if #nodes_table > 0 then
+			local pt = s:option(ListValue, _n(e[".name"] .. "_proxy_tag"), string.format('* <a style="color:#FF8C00">%s</a>', e.remarks .. " " .. translate("Preproxy")))
+			pt:value("", translate("Close"))
+			pt:value("main", translate("Preproxy Node"))
+			pt:depends("__hide__", "1")
+
+			local fakedns_tag = s:option(Flag, _n(e[".name"] .. "_fakedns"), string.format('* <a style="color:#FF8C00">%s</a>', e.remarks .. " " .. "FakeDNS"))
+
 			for k, v in pairs(socks_list) do
 				o:value(v.id, v.remark)
 				o.group[#o.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
+				fakedns_tag:depends({ [_n("protocol")] = "_shunt", [_n("fakedns")] = true, [_n(e[".name"])] = v.id })
 			end
 			for k, v in pairs(urltest_table) do
 				o:value(v.id, v.remark)
@@ -236,13 +249,16 @@ m.uci:foreach(appname, "shunt_rules", function(e)
 				o:value(v.id, v.remark)
 				o.group[#o.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
 			end
-			local pt = s:option(ListValue, _n(e[".name"] .. "_proxy_tag"), string.format('* <a style="color:red">%s</a>', e.remarks .. " " .. translate("Preproxy")))
-			pt:value("", translate("Close"))
-			pt:value("main", translate("Preproxy Node"))
 			for k, v in pairs(nodes_table) do
 				o:value(v.id, v.remark)
 				o.group[#o.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
-				pt:depends({ [_n("protocol")] = "_shunt", [_n("preproxy_enabled")] = true, [_n(e[".name"])] = v.id })
+				if not api.is_local_ip(v.address) then  --本地节点禁止使用前置
+					pt:depends({ [_n("protocol")] = "_shunt", [_n("preproxy_enabled")] = true, [_n(e[".name"])] = v.id })
+				end
+				fakedns_tag:depends({ [_n("protocol")] = "_shunt", [_n("fakedns")] = true, [_n(e[".name"])] = v.id })
+			end
+			if default_node ~= "_direct" or default_node ~= "_blackhole" then
+				fakedns_tag:depends({ [_n("protocol")] = "_shunt", [_n("fakedns")] = true, [_n(e[".name"])] = "_default" })
 			end
 		end
 	end
@@ -279,10 +295,13 @@ if #nodes_table > 0 then
 	local dpt = s:option(ListValue, _n("default_proxy_tag"), string.format('* <a style="color:red">%s</a>', translate("Default Preproxy")), translate("When using, localhost will connect this node first and then use this node to connect the default node."))
 	dpt:value("", translate("Close"))
 	dpt:value("main", translate("Preproxy Node"))
+	dpt:depends("__hide__", "1")
 	for k, v in pairs(nodes_table) do
 		o:value(v.id, v.remark)
 		o.group[#o.group+1] = (v.group and v.group ~= "") and v.group or translate("default")
-		dpt:depends({ [_n("protocol")] = "_shunt", [_n("preproxy_enabled")] = true, [_n("default_node")] = v.id })
+		if not api.is_local_ip(v.address) then
+			dpt:depends({ [_n("protocol")] = "_shunt", [_n("preproxy_enabled")] = true, [_n("default_node")] = v.id })
+		end
 	end
 end
 
@@ -641,18 +660,12 @@ o = s:option(DynamicList, _n("tcp_guise_http_path"), translate("HTTP Path"))
 o.placeholder = "/"
 o:depends({ [_n("tcp_guise")] = "http" })
 
-o = s:option(Value, _n("tcp_guise_http_user_agent"), translate("User-Agent"))
-o:depends({ [_n("tcp_guise")] = "http" })
-
 -- [[ HTTP部分 ]]--
 o = s:option(DynamicList, _n("http_host"), translate("HTTP Host"))
 o:depends({ [_n("transport")] = "http" })
 
 o = s:option(Value, _n("http_path"), translate("HTTP Path"))
 o.placeholder = "/"
-o:depends({ [_n("transport")] = "http" })
-
-o = s:option(Value, _n("http_user_agent"), translate("User-Agent"))
 o:depends({ [_n("transport")] = "http" })
 
 o = s:option(Flag, _n("http_h2_health_check"), translate("Health check"))
@@ -674,9 +687,6 @@ o = s:option(Value, _n("ws_path"), translate("WebSocket Path"))
 o.placeholder = "/"
 o:depends({ [_n("transport")] = "ws" })
 
-o = s:option(Value, _n("ws_user_agent"), translate("User-Agent"))
-o:depends({ [_n("transport")] = "ws" })
-
 o = s:option(Flag, _n("ws_enableEarlyData"), translate("Enable early data"))
 o:depends({ [_n("transport")] = "ws" })
 
@@ -693,9 +703,6 @@ o:depends({ [_n("transport")] = "httpupgrade" })
 
 o = s:option(Value, _n("httpupgrade_path"), translate("HTTPUpgrade Path"))
 o.placeholder = "/"
-o:depends({ [_n("transport")] = "httpupgrade" })
-
-o = s:option(Value, _n("httpupgrade_user_agent"), translate("User-Agent"))
 o:depends({ [_n("transport")] = "httpupgrade" })
 
 -- [[ gRPC部分 ]]--
@@ -716,6 +723,13 @@ o:depends({ [_n("grpc_health_check")] = true })
 o = s:option(Flag, _n("grpc_permit_without_stream"), translate("Permit without stream"))
 o.default = "0"
 o:depends({ [_n("grpc_health_check")] = true })
+
+-- [[ User-Agent ]]--
+o = s:option(Value, _n("user_agent"), translate("User-Agent"))
+o:depends({ [_n("tcp_guise")] = "http" })
+o:depends({ [_n("transport")] = "http" })
+o:depends({ [_n("transport")] = "ws" })
+o:depends({ [_n("transport")] = "httpupgrade" })
 
 -- [[ Mux ]]--
 o = s:option(Flag, _n("mux"), translate("Mux"))

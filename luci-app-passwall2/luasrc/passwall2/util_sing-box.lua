@@ -12,15 +12,78 @@ local local_version = api.get_app_version("sing-box"):match("[^v]+")
 local version_ge_1_11_0 = api.compare_versions(local_version, ">=", "1.11.0")
 local version_ge_1_12_0 = api.compare_versions(local_version, ">=", "1.12.0")
 
-local new_port
+local GEO_VAR = {
+	OK = nil,
+	DIR = nil,
+	SITE_PATH = nil,
+	IP_PATH = nil,
+	SITE_TAGS = {},
+	IP_TAGS = {},
+	TO_SRS_PATH = "/tmp/etc/" .. appname .."_tmp/singbox_srss/"
+}
 
-local function get_new_port()
-	if new_port then
-		new_port = tonumber(sys.exec(string.format("echo -n $(/usr/share/%s/app.sh get_new_port %s tcp)", appname, new_port + 1)))
-	else
-		new_port = tonumber(sys.exec(string.format("echo -n $(/usr/share/%s/app.sh get_new_port auto tcp)", appname)))
+function check_geoview()
+	if not GEO_VAR.OK then
+		-- Only get once
+		GEO_VAR.OK = (api.finded_com("geoview") and api.compare_versions(api.get_app_version("geoview"), ">=", "0.1.10")) and 1 or 0
 	end
-	return new_port
+	if GEO_VAR.OK == 0 then
+		api.log(0, "!!! Note: Geo rules cannot be used if the Geoview component is missing or the version is too low.")
+	else
+		GEO_VAR.DIR = GEO_VAR.DIR or (uci:get(appname, "@global_rules[0]", "v2ray_location_asset") or "/usr/share/v2ray/"):match("^(.*)/")
+		GEO_VAR.SITE_PATH = GEO_VAR.SITE_PATH or (GEO_VAR.DIR .. "/geosite.dat")
+		GEO_VAR.IP_PATH = GEO_VAR.IP_PATH or (GEO_VAR.DIR .. "/geoip.dat")
+		if not fs.access(GEO_VAR.TO_SRS_PATH) then
+			fs.mkdir(GEO_VAR.TO_SRS_PATH)
+		end
+	end
+	return GEO_VAR.OK
+end
+
+function geo_convert_srs(var)
+	if check_geoview() ~= 1 then
+		return
+	end
+	local geo_path = var["geo_path"]
+	local prefix = var["prefix"]
+	local rule_name = var["rule_name"]
+	local output_srs_file = GEO_VAR.TO_SRS_PATH .. prefix .. "-" .. rule_name .. ".srs"
+	if not fs.access(output_srs_file) then
+		local cmd = string.format("geoview -type %s -action convert -input '%s' -list '%s' -output '%s' -lowmem=true",
+			prefix, geo_path, rule_name, output_srs_file)
+		sys.call(cmd)
+		local status = fs.access(output_srs_file) and "success." or "failed!"
+		if status == "failed!" then
+			api.log(0, string.format("  - %s:%s convert to srs %s", prefix, rule_name, status))
+		end
+	end
+end
+
+local function convert_geofile()
+	if check_geoview() ~= 1 then
+		return
+	end
+	local function convert(file_path, prefix, tags)
+		if next(tags) and fs.access(file_path) then
+			local md5_file = GEO_VAR.TO_SRS_PATH .. prefix .. ".dat.md5"
+			local new_md5 = sys.exec("md5sum " .. file_path .. " 2>/dev/null | awk '{print $1}'"):gsub("\n", "")
+			local old_md5 = sys.exec("[ -f " .. md5_file .. " ] && head -n 1 " .. md5_file .. " | tr -d ' \t\n' || echo ''")
+			if new_md5 ~= "" and new_md5 ~= old_md5 then
+				sys.call("printf '%s' " .. new_md5 .. " > " .. md5_file)
+				sys.call("rm -rf " .. GEO_VAR.TO_SRS_PATH .. prefix .. "-*.srs" )
+			end
+			for k in pairs(tags) do
+				geo_convert_srs({
+					["geo_path"] = file_path,
+					["prefix"] = prefix,
+					["rule_name"] = k
+				})
+			end
+		end
+	end
+	--api.log(0, "V2ray/Xray Geo convert to Sing-Box rule-set:")
+	convert(GEO_VAR.SITE_PATH, "geosite", GEO_VAR.SITE_TAGS)
+	convert(GEO_VAR.IP_PATH, "geoip", GEO_VAR.IP_TAGS)
 end
 
 function gen_outbound(flag, node, tag, proxy_table)
@@ -44,9 +107,9 @@ function gen_outbound(flag, node, tag, proxy_table)
 
 		if node.type ~= "sing-box" then
 			local relay_port = node.port
-			new_port = get_new_port()
+			local new_port = api.get_new_port()
 			local config_file = string.format("%s_%s_%s.json", flag, tag, new_port)
-			if tag and node_id and tag ~= node_id then
+			if tag and node_id and not tag:find(node_id) then
 				config_file = string.format("%s_%s_%s_%s.json", flag, tag, node_id, new_port)
 			end
 			if run_socks_instance then
@@ -149,8 +212,8 @@ function gen_outbound(flag, node, tag, proxy_table)
 						local first = node.tcp_guise_http_path[1]
 						return (first == "" or not first) and "/" or first
 					end)() or "/",
-				headers = node.tcp_guise_http_user_agent and {
-					["User-Agent"] = node.tcp_guise_http_user_agent
+				headers = node.user_agent and {
+					["User-Agent"] = node.user_agent
 				} or nil,
 				idle_timeout = (node.http_h2_health_check == "1") and node.http_h2_read_idle_timeout or nil,
 				ping_timeout = (node.http_h2_health_check == "1") and node.http_h2_health_check_timeout or nil,
@@ -163,8 +226,8 @@ function gen_outbound(flag, node, tag, proxy_table)
 				type = "http",
 				host = node.http_host or {},
 				path = node.http_path or "/",
-				headers = node.http_user_agent and {
-					["User-Agent"] = node.http_user_agent
+				headers = node.user_agent and {
+					["User-Agent"] = node.user_agent
 				} or nil,
 				idle_timeout = (node.http_h2_health_check == "1") and node.http_h2_read_idle_timeout or nil,
 				ping_timeout = (node.http_h2_health_check == "1") and node.http_h2_health_check_timeout or nil,
@@ -176,9 +239,9 @@ function gen_outbound(flag, node, tag, proxy_table)
 			v2ray_transport = {
 				type = "ws",
 				path = node.ws_path or "/",
-				headers = (node.ws_host or node.ws_user_agent) and {
+				headers = (node.ws_host or node.user_agent) and {
 					Host = node.ws_host,
-					["User-Agent"] = node.ws_user_agent
+					["User-Agent"] = node.user_agent
 				} or nil,
 				max_early_data = tonumber(node.ws_maxEarlyData) or nil,
 				early_data_header_name = (node.ws_earlyDataHeaderName) and node.ws_earlyDataHeaderName or nil -- For compatibility with Xray-core, set it to Sec-WebSocket-Protocol. It needs to be consistent with the server.
@@ -190,8 +253,8 @@ function gen_outbound(flag, node, tag, proxy_table)
 				type = "httpupgrade",
 				host = node.httpupgrade_host,
 				path = node.httpupgrade_path or "/",
-				headers = node.httpupgrade_user_agent and {
-					["User-Agent"] = node.httpupgrade_user_agent
+				headers = node.user_agent and {
+					["User-Agent"] = node.user_agent
 				} or nil
 			}
 		end
@@ -476,8 +539,7 @@ end
 
 function gen_config_server(node)
 	local outbounds = {
-		{ type = "direct", tag = "direct" },
-		{ type = "block", tag = "block" }
+		{ type = "direct", tag = "direct" }
 	}
 
 	local tls = {
@@ -780,8 +842,9 @@ function gen_config_server(node)
 	local route = {
 		rules = {
 			{
-				ip_cidr = { "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16" },
-				outbound = (node.accept_lan == nil or node.accept_lan == "0") and "block" or "direct"
+				ip_is_private = true,
+				action = node.accept_lan == "1" and "route" or "reject",
+				outbound = node.accept_lan == "1" and "direct" or nil
 			}
 		}
 	}
@@ -836,68 +899,48 @@ function gen_config_server(node)
 		end
 	end
 
-	if version_ge_1_11_0 then
-		-- Migrate logics
-		-- https://sing-box.sagernet.org/migration/
-		for i = #config.outbounds, 1, -1 do
-			local value = config.outbounds[i]
-			if value.type == "block" then
-				-- https://sing-box.sagernet.org/migration/#migrate-legacy-special-outbounds-to-rule-actions
-				table.remove(config.outbounds, i)
-			end
-		end
-		-- https://sing-box.sagernet.org/migration/#migrate-legacy-special-outbounds-to-rule-actions
-		for i = #config.route.rules, 1, -1 do
-			local value = config.route.rules[i]
-			if value.outbound == "block" then
-				value.action = "reject"
-				value.outbound = nil
-			end
-		end
-	end
-
 	return config
 end
 
 function gen_config(var)
-	local flag = var["-flag"]
-	local log = var["-log"] or "0"
-	local loglevel = var["-loglevel"] or "warn"
-	local logfile = var["-logfile"] or "/dev/null"
-	local node_id = var["-node"]
-	local server_host = var["-server_host"]
-	local server_port = var["-server_port"]
-	local tcp_proxy_way = var["-tcp_proxy_way"]
-	local redir_port = var["-redir_port"]
-	local local_socks_address = var["-local_socks_address"] or "0.0.0.0"
-	local local_socks_port = var["-local_socks_port"]
-	local local_socks_username = var["-local_socks_username"]
-	local local_socks_password = var["-local_socks_password"]
-	local local_http_address = var["-local_http_address"] or "0.0.0.0"
-	local local_http_port = var["-local_http_port"]
-	local local_http_username = var["-local_http_username"]
-	local local_http_password = var["-local_http_password"]
-	local dns_listen_port = var["-dns_listen_port"]
-	local direct_dns_udp_server = var["-direct_dns_udp_server"]
-	local direct_dns_udp_port = var["-direct_dns_udp_port"]
-	local direct_dns_query_strategy = var["-direct_dns_query_strategy"]
-	local direct_ipset = var["-direct_ipset"]
-	local direct_nftset = var["-direct_nftset"]
-	local remote_dns_udp_server = var["-remote_dns_udp_server"]
-	local remote_dns_udp_port = var["-remote_dns_udp_port"]
-	local remote_dns_tcp_server = var["-remote_dns_tcp_server"]
-	local remote_dns_tcp_port = var["-remote_dns_tcp_port"]
-	local remote_dns_doh_url = var["-remote_dns_doh_url"]
-	local remote_dns_doh_host = var["-remote_dns_doh_host"]
-	local remote_dns_doh_ip = var["-remote_dns_doh_ip"]
-	local remote_dns_doh_port = var["-remote_dns_doh_port"]
-	local remote_dns_detour = var["-remote_dns_detour"]
-	local remote_dns_query_strategy = var["-remote_dns_query_strategy"]
-	local remote_dns_fake = var["-remote_dns_fake"]
-	local remote_dns_client_ip = var["-remote_dns_client_ip"]
-	local dns_cache = var["-dns_cache"]
-	local tags = var["-tags"]
-	local no_run = var["-no_run"]
+	local flag = var["flag"]
+	local log = var["log"] or "0"
+	local loglevel = var["loglevel"] or "warn"
+	local logfile = var["logfile"] or "/dev/null"
+	local node_id = var["node"]
+	local server_host = var["server_host"]
+	local server_port = var["server_port"]
+	local tcp_proxy_way = var["tcp_proxy_way"]
+	local redir_port = var["redir_port"]
+	local local_socks_address = var["local_socks_address"] or "0.0.0.0"
+	local local_socks_port = var["local_socks_port"]
+	local local_socks_username = var["local_socks_username"]
+	local local_socks_password = var["local_socks_password"]
+	local local_http_address = var["local_http_address"] or "0.0.0.0"
+	local local_http_port = var["local_http_port"]
+	local local_http_username = var["local_http_username"]
+	local local_http_password = var["local_http_password"]
+	local dns_listen_port = var["dns_listen_port"]
+	local direct_dns_udp_server = var["direct_dns_udp_server"]
+	local direct_dns_udp_port = var["direct_dns_udp_port"]
+	local direct_dns_query_strategy = var["direct_dns_query_strategy"]
+	local direct_ipset = var["direct_ipset"]
+	local direct_nftset = var["direct_nftset"]
+	local remote_dns_udp_server = var["remote_dns_udp_server"]
+	local remote_dns_udp_port = var["remote_dns_udp_port"]
+	local remote_dns_tcp_server = var["remote_dns_tcp_server"]
+	local remote_dns_tcp_port = var["remote_dns_tcp_port"]
+	local remote_dns_doh_url = var["remote_dns_doh_url"]
+	local remote_dns_doh_host = var["remote_dns_doh_host"]
+	local remote_dns_doh_ip = var["remote_dns_doh_ip"]
+	local remote_dns_doh_port = var["remote_dns_doh_port"]
+	local remote_dns_detour = var["remote_dns_detour"]
+	local remote_dns_query_strategy = var["remote_dns_query_strategy"]
+	local remote_dns_fake = var["remote_dns_fake"]
+	local remote_dns_client_ip = var["remote_dns_client_ip"]
+	local dns_cache = var["dns_cache"]
+	local tags = var["tags"]
+	local no_run = var["no_run"]
 
 	local dns_domain_rules = {}
 	local dns = nil
@@ -911,33 +954,31 @@ function gen_config(var)
 	local singbox_settings = uci:get_all(appname, "@global_singbox[0]") or {}
 
 	local route = {
-		rules = {},
-		geoip = {
-			path = singbox_settings.geoip_path or "/usr/share/singbox/geoip.db",
-			download_url = singbox_settings.geoip_url or nil,
-			download_detour = nil,
-		},
-		geosite = {
-			path = singbox_settings.geosite_path or "/usr/share/singbox/geosite.db",
-			download_url = singbox_settings.geosite_url or nil,
-			download_detour = nil,
-		},
+		rules = {}
 	}
 
 	local experimental = nil
 
-	function rule_set_add(w)
+	function add_rule_set(tab)
+		if tab and next(tab) and tab.tag and not rule_set_table[tab.tag]then
+			rule_set_table[tab.tag] = tab
+		end
+	end
+
+	function parse_rule_set(w, rs)
+		-- Format: remote:https://raw.githubusercontent.com/lyc8503/sing-box-rules/rule-set-geosite/geosite-netflix.srs'
+		-- Format: local:/usr/share/sing-box/geosite-netflix.srs'
 		local result = nil
 		if w and #w > 0 then
 			if w:find("local:") == 1 or w:find("remote:") == 1 then
-				local _type = w:sub(1, w:find(":") - 1)
+				local _type = w:sub(1, w:find(":") - 1) -- "local" or "remote"
 				w = w:sub(w:find(":") + 1, #w)
 				local format = nil
-				local filename = w:sub(-w:reverse():find("/") + 1)
+				local filename = w:sub(-w:reverse():find("/") + 1) -- geosite-netflix.srs
 				local suffix = ""
 				local find_doc = filename:reverse():find("%.")
 				if find_doc then
-					suffix = filename:sub(-find_doc + 1)
+					suffix = filename:sub(-find_doc + 1) -- "srs" or "json"
 				end
 				if suffix == "srs" then
 					format = "binary"
@@ -945,9 +986,12 @@ function gen_config(var)
 					format = "source"
 				end
 				if format then
-					local rule_set_tag = filename:sub(1, filename:find("%.") - 1)
-					if not rule_set_table[rule_set_tag] then
-						local t = {
+					local rule_set_tag = filename:sub(1, filename:find("%.") - 1) --geosite-netflix
+					if rule_set_tag and #rule_set_tag > 0 then
+						if rs then
+							rule_set_tag = "rs_" .. rule_set_tag
+						end
+						result = {
 							type = _type,
 							tag = rule_set_tag,
 							format = format,
@@ -956,13 +1000,16 @@ function gen_config(var)
 							--download_detour = _type == "remote" and "",
 							--update_interval = _type == "remote" and "",
 						}
-						rule_set_table[rule_set_tag] = t
-						result = t
 					end
 				end
 			end
 		end
 		return result
+	end
+
+	function geo_rule_set(prefix, rule_name)
+		local output_srs_file = "local:" .. GEO_VAR.TO_SRS_PATH .. prefix .. "-" .. rule_name .. ".srs"
+		return parse_rule_set(output_srs_file)
 	end
 
 	local node = nil
@@ -1064,12 +1111,30 @@ function gen_config(var)
 					end
 				end
 				if is_new_ut_node then
-					local ut_node = uci:get_all(appname, ut_node_id)
-					local outbound = gen_outbound(flag, ut_node, ut_node_tag, { fragment = singbox_settings.fragment == "1" or nil, record_fragment = singbox_settings.record_fragment == "1" or nil, run_socks_instance = not no_run })
-					if outbound then
-						outbound.tag = outbound.tag .. ":" .. ut_node.remarks
-						table.insert(outbounds, outbound)
-						valid_nodes[#valid_nodes + 1] = outbound.tag
+					local ut_node
+					if ut_node_id:find("Socks_") then
+						local socks_id = ut_node_id:sub(1 + #"Socks_")
+						local socks_node = uci:get_all(appname, socks_id) or nil
+						if socks_node then
+							ut_node = {
+								type = "sing-box",
+								protocol = "socks",
+								address = "127.0.0.1",
+								port = socks_node.port,
+								uot = "1",
+								remarks = "Socks_" .. socks_node.port
+							}
+						end
+					else
+						ut_node = uci:get_all(appname, ut_node_id)
+					end
+					if ut_node then
+						local outbound = gen_outbound(flag, ut_node, ut_node_tag, { fragment = singbox_settings.fragment == "1" or nil, record_fragment = singbox_settings.record_fragment == "1" or nil, run_socks_instance = not no_run })
+						if outbound then
+							outbound.tag = outbound.tag .. ":" .. ut_node.remarks
+							table.insert(outbounds, outbound)
+							valid_nodes[#valid_nodes + 1] = outbound.tag
+						end
 					end
 				end
 			end
@@ -1160,6 +1225,8 @@ function gen_config(var)
 			local preproxy_tag = preproxy_rule_name
 			local preproxy_node_id = preproxy_rule_name and node["main_node"] or nil
 
+			inner_fakedns = node.fakedns or "0"
+
 			local function gen_shunt_node(rule_name, _node_id)
 				if not rule_name then return nil end
 				if not _node_id then _node_id = node[rule_name] end
@@ -1211,7 +1278,7 @@ function gen_config(var)
 									pre_proxy = true
 								end
 								if pre_proxy then
-									new_port = get_new_port()
+									local new_port = api.get_new_port()
 									table.insert(inbounds, {
 										type = "direct",
 										tag = "proxy_" .. rule_name,
@@ -1331,19 +1398,24 @@ function gen_config(var)
 					end
 
 					if e.source then
-						local source_geoip = {}
 						local source_ip_cidr = {}
+						local source_is_private = false
 						string.gsub(e.source, '[^' .. " " .. ']+', function(w)
-							if w:find("geoip") == 1 then
-								table.insert(source_geoip, w)
+							if w:find("geoip:") == 1 then
+								local _geoip = w:sub(1 + #"geoip:")
+								if _geoip == "private" then
+									source_is_private = true
+								end
 							else
 								table.insert(source_ip_cidr, w)
 							end
 						end)
-						rule.source_geoip = #source_geoip > 0 and source_geoip or nil
 						rule.source_ip_cidr = #source_ip_cidr > 0 and source_ip_cidr or nil
+						rule.source_ip_is_private = source_is_private and true or nil
 					end
 
+					--[[
+					-- Too low usage rate, hidden
 					if e.sourcePort then
 						local source_port = {}
 						local source_port_range = {}
@@ -1357,6 +1429,7 @@ function gen_config(var)
 						rule.source_port = #source_port > 0 and source_port or nil
 						rule.source_port_range = #source_port_range > 0 and source_port_range or nil
 					end
+					]]--
 
 					if e.port then
 						local port = {}
@@ -1381,14 +1454,21 @@ function gen_config(var)
 							domain_suffix = {},
 							domain_keyword = {},
 							domain_regex = {},
-							geosite = {},
 							rule_set = {},
+							fakedns = nil,
 							invert = e.invert == "1" and true or nil
 						}
 						string.gsub(e.domain_list, '[^' .. "\r\n" .. ']+', function(w)
 							if w:find("#") == 1 then return end
 							if w:find("geosite:") == 1 then
-								table.insert(domain_table.geosite, w:sub(1 + #"geosite:"))
+								local _geosite = w:sub(1 + #"geosite:")
+								local t = geo_rule_set("geosite", _geosite)
+								if t then
+									GEO_VAR.SITE_TAGS[_geosite] = true
+									add_rule_set(t)
+									table.insert(rule_set, t.tag)
+									table.insert(domain_table.rule_set, t.tag)
+								end
 							elseif w:find("regexp:") == 1 then
 								table.insert(domain_table.domain_regex, w:sub(1 + #"regexp:"))
 							elseif w:find("full:") == 1 then
@@ -1397,8 +1477,9 @@ function gen_config(var)
 								table.insert(domain_table.domain_suffix, w:sub(1 + #"domain:"))
 							elseif w:find("rule-set:", 1, true) == 1 or w:find("rs:") == 1 then
 								w = w:sub(w:find(":") + 1, #w)
-								local t = rule_set_add(w)
+								local t = parse_rule_set(w, true)
 								if t then
+									add_rule_set(t)
 									table.insert(rule_set, t.tag)
 									table.insert(domain_table.rule_set, t.tag)
 								end
@@ -1410,8 +1491,10 @@ function gen_config(var)
 						rule.domain_suffix = #domain_table.domain_suffix > 0 and domain_table.domain_suffix or nil
 						rule.domain_keyword = #domain_table.domain_keyword > 0 and domain_table.domain_keyword or nil
 						rule.domain_regex = #domain_table.domain_regex > 0 and domain_table.domain_regex or nil
-						rule.geosite = #domain_table.geosite > 0 and domain_table.geosite or nil
 						rule.rule_set = #domain_table.rule_set > 0 and domain_table.rule_set or nil
+						if inner_fakedns == "1" and node[e[".name"] .. "_fakedns"] == "1" then
+							domain_table.fakedns = true
+						end
 
 						if outboundTag then
 							table.insert(dns_domain_rules, api.clone(domain_table))
@@ -1420,15 +1503,26 @@ function gen_config(var)
 
 					if e.ip_list then
 						local ip_cidr = {}
-						local geoip = {}
+						local is_private = false
 						string.gsub(e.ip_list, '[^' .. "\r\n" .. ']+', function(w)
 							if w:find("#") == 1 then return end
 							if w:find("geoip:") == 1 then
-								table.insert(geoip, w:sub(1 + #"geoip:"))
+								local _geoip = w:sub(1 + #"geoip:")
+								if _geoip == "private" then
+									is_private = true
+								else
+									local t = geo_rule_set("geoip", _geoip)
+									if t then
+										GEO_VAR.IP_TAGS[_geoip] = true
+										add_rule_set(t)
+										table.insert(rule_set, t.tag)
+									end
+								end
 							elseif w:find("rule-set:", 1, true) == 1 or w:find("rs:") == 1 then
 								w = w:sub(w:find(":") + 1, #w)
-								local t = rule_set_add(w)
+								local t = parse_rule_set(w, true)
 								if t then
+									add_rule_set(t)
 									table.insert(rule_set, t.tag)
 								end
 							else
@@ -1436,8 +1530,8 @@ function gen_config(var)
 							end
 						end)
 
+						rule.ip_is_private = is_private and true or nil
 						rule.ip_cidr = #ip_cidr > 0 and ip_cidr or nil
-						rule.geoip = #geoip > 0 and geoip or nil
 					end
 					rule.rule_set = #rule_set > 0 and rule_set or nil
 					rule.invert = e.invert == "1" and true or nil
@@ -1537,7 +1631,7 @@ function gen_config(var)
 		end
 
 		local fakedns_tag = "remote_fakeip"
-		if remote_dns_fake then
+		if remote_dns_fake or inner_fakedns == "1" then
 			dns.fakeip = {
 				enabled = true,
 				inet4_range = "198.18.0.0/16",
@@ -1606,14 +1700,13 @@ function gen_config(var)
 		-- DNS in order of shunt
 		if dns_domain_rules and #dns_domain_rules > 0 then
 			for index, value in ipairs(dns_domain_rules) do
-				if value.outboundTag and (value.domain or value.domain_suffix or value.domain_keyword or value.domain_regex or value.geosite or value.rule_set) then
+				if value.outboundTag and (value.domain or value.domain_suffix or value.domain_keyword or value.domain_regex or value.rule_set) then
 					local dns_rule = {
 						server = value.outboundTag,
 						domain = (value.domain and #value.domain > 0) and value.domain or nil,
 						domain_suffix = (value.domain_suffix and #value.domain_suffix > 0) and value.domain_suffix or nil,
 						domain_keyword = (value.domain_keyword and #value.domain_keyword > 0) and value.domain_keyword or nil,
 						domain_regex = (value.domain_regex and #value.domain_regex > 0) and value.domain_regex or nil,
-						geosite = (value.geosite and #value.geosite > 0) and value.geosite or nil,
 						rule_set = (value.rule_set and #value.rule_set > 0) and value.rule_set or nil,
 						disable_cache = false,
 						invert = value.invert,
@@ -1628,7 +1721,7 @@ function gen_config(var)
 							table.insert(dns.servers, remote_dns_server)
 							dns_rule.server = remote_dns_server.tag
 						end
-						if remote_dns_fake then
+						if value.fakedns then
 							local fakedns_dns_rule = api.clone(dns_rule)
 							fakedns_dns_rule.query_type = {
 								"A", "AAAA"
@@ -1835,42 +1928,24 @@ function gen_config(var)
 				})
 			end
 		end
-		if version_ge_1_12_0 then
-			-- removed geo in version 1.12
-			config.route.geoip = nil
-			config.route.geosite = nil
-			if config.route and config.route.rules then
-				for i = #config.route.rules, 1, -1 do
-					local value = config.route.rules[i]
-					value.geoip = nil
-					value.geosite = nil
-				end
-			end
-			if config.dns and config.dns.rules then
-				for i = #config.dns.rules, 1, -1 do
-					local value = config.dns.rules[i]
-					value.geosite = nil
-				end
-			end
-		end
 		return jsonc.stringify(config, 1)
 	end
 end
 
 function gen_proto_config(var)
-	local local_socks_address = var["-local_socks_address"] or "0.0.0.0"
-	local local_socks_port = var["-local_socks_port"]
-	local local_socks_username = var["-local_socks_username"]
-	local local_socks_password = var["-local_socks_password"]
-	local local_http_address = var["-local_http_address"] or "0.0.0.0"
-	local local_http_port = var["-local_http_port"]
-	local local_http_username = var["-local_http_username"]
-	local local_http_password = var["-local_http_password"]
-	local server_proto = var["-server_proto"]
-	local server_address = var["-server_address"]
-	local server_port = var["-server_port"]
-	local server_username = var["-server_username"]
-	local server_password = var["-server_password"]
+	local local_socks_address = var["local_socks_address"] or "0.0.0.0"
+	local local_socks_port = var["local_socks_port"]
+	local local_socks_username = var["local_socks_username"]
+	local local_socks_password = var["local_socks_password"]
+	local local_http_address = var["local_http_address"] or "0.0.0.0"
+	local local_http_port = var["local_http_port"]
+	local local_http_username = var["local_http_username"]
+	local local_http_password = var["local_http_password"]
+	local server_proto = var["server_proto"]
+	local server_address = var["server_address"]
+	local server_port = var["server_port"]
+	local server_username = var["server_username"]
+	local server_password = var["server_password"]
 
 	local inbounds = {}
 	local outbounds = {}
@@ -1936,10 +2011,18 @@ end
 
 _G.gen_config = gen_config
 _G.gen_proto_config = gen_proto_config
+_G.geo_convert_srs = geo_convert_srs
 
 if arg[1] then
 	local func =_G[arg[1]]
 	if func then
-		print(func(api.get_function_args(arg)))
+		local var = nil
+		if arg[2] then
+			var = jsonc.parse(arg[2])
+		end
+		print(func(var))
+		if (next(GEO_VAR.SITE_TAGS) or next(GEO_VAR.IP_TAGS)) and not no_run then
+			convert_geofile()
+		end
 	end
 end
