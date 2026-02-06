@@ -1,17 +1,4 @@
 #!/bin/sh
-[ ! -f "/usr/share/ucitrack/luci-app-passwall2.json" ] && {
-    cat > /usr/share/ucitrack/luci-app-passwall2.json << EEOF
-{
-    "config": "passwall2",
-    "init": "passwall2"
-}
-EEOF
-}
-
-[ "`which nft`" ] && {
-uci -q set passwall2.@global_forwarding[0].use_nft=1
-uci -q commit passwall2
-}
 
 if [ -e "/etc/config/ucitrack" ]; then
     uci -q batch <<-EOF
