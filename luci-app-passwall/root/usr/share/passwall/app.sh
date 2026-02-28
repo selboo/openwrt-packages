@@ -702,7 +702,7 @@ run_redir() {
 			[ -z "$can_ipt" ] && {
 				local _config_file=$config_file
 				_config_file="TCP_SOCKS_${node}.json"
-				local _port=$(get_new_port 2080)
+				local _port=$(get_new_port 3001)
 				run_socks flag="TCP" node=$node bind=127.0.0.1 socks_port=${_port} config_file=${_config_file}
 				_socks_address=127.0.0.1
 				_socks_port=${_port}
@@ -1900,7 +1900,7 @@ stop() {
 		fi
 	done
 	pgrep -f "sleep.*(6s|9s|58s)" | xargs kill -9 >/dev/null 2>&1
-	pgrep -af "${CONFIG}/" | awk '! /app\.sh|subscribe\.lua|rule_update\.lua|tasks\.sh|ujail/{print $1}' | xargs kill -9 >/dev/null 2>&1
+	pgrep -af "${CONFIG}/" | awk '! /app\.sh|subscribe\.lua|rule_update\.lua|tasks\.sh|server_app\.lua|ujail/{print $1}' | xargs kill -9 >/dev/null 2>&1
 	stop_crontab
 	source $APP_PATH/helper_smartdns.sh del
 	rm -rf $GLOBAL_DNSMASQ_CONF
