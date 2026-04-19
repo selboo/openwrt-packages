@@ -851,42 +851,59 @@ function exec(cmd, args, writer, timeout)
 	end
 end
 
-function parseURL(url)
-	if not url or url == "" then
-		return nil
-	end
-	local pattern = "^(%w+)://"
-	local protocol = url:match(pattern)
+function parseURL(url_str)
+	local res = {}
 
-	if not protocol then
-		--error("Invalid URL: " .. url)
-		return nil
-	end
-
-	local auth_host_port = url:sub(#protocol + 4)
-	local auth_pattern = "^([^@]+)@"
-	local auth = auth_host_port:match(auth_pattern)
-	local username, password
-
-	if auth then
-		username, password = auth:match("^([^:]+):([^:]+)$")
-		auth_host_port = auth_host_port:sub(#auth + 2)
+	-- 1. Get Scheme (http://)
+	local rest = url_str
+	local scheme, s_rest = url_str:match("^([%w%.%-%+]+)://(.+)$")
+	if scheme then
+		res.protocol = scheme
+		rest = s_rest
 	end
 
-	local host, port = auth_host_port:match("^([^:]+):(%d+)$")
-
-	if not host or not port then
-		--error("Invalid URL: " .. url)
-		return nil
+	-- 2. Get Authority (user:pass@host:port) and Path
+	local authority, path = rest:match("^([^/]+)(.*)$")
+	if path and path ~= "" then
+		res.pathname = path:match("^([^?#]*)")
 	end
 
-	return {
-		protocol = protocol,
-		username = username,
-		password = password,
-		host = host,
-		port = tonumber(port)
-	}
+	-- 3. Process Auth info (user:pass@)
+	-- Use [^@]+ to match the content before the leftmost @.
+	local user_info, host_port = authority:match("^([^@]+)@(.+)$")
+	if user_info then
+		local u, p = user_info:match("^([^:]+):?(.*)$")
+		res.username = u or ""
+		res.password = p or ""
+	else
+		host_port = authority
+	end
+
+	-- 4. Handles Host and Port (IPv6 compatible)
+	-- First look for square brackets [], if not found, then look for regular colons.
+	local ipv6_host, ipv6_port = host_port:match("^%[(.+)%]:(%d+)$")
+	if ipv6_host then
+		res.hostname = ipv6_host
+		res.port = tonumber(ipv6_port)
+	else
+		-- Check if it's an IPv6 address with parentheses but no port number: [2001:db8::1]
+		local pure_ipv6 = host_port:match("^%[(.+)%]$")
+		if pure_ipv6 then
+			res.hostname = pure_ipv6
+		else
+			-- IPv4 or hostname match
+			local h, p = host_port:match("^([^:]+):(%d+)$")
+			if h and p then
+				res.hostname = h
+				res.port = tonumber(p)
+			else
+				res.hostname = host_port
+			end
+		end
+	end
+
+	res.host = host_port
+	return res
 end
 
 function compare_versions(ver1, comp, ver2)
@@ -1533,4 +1550,45 @@ function get_core(field, candidates)
 		if c[1] then return c[2] end
 	end
 	return nil
+end
+
+function cleanEmptyTables(t)
+	if type(t) ~= "table" then return nil end
+	for k, v in pairs(t) do
+		if type(v) == "table" then
+			t[k] = cleanEmptyTables(v)
+		end
+	end
+	return next(t) and t or nil
+end
+
+function get_dnsmasq_server_domain()
+	local dnsmasq_server = uci:get("dhcp", "@dnsmasq[0]", "server")
+	local dnsmasq_server_t = {}
+	if dnsmasq_server and #dnsmasq_server > 0 then
+		for k, v in ipairs(dnsmasq_server) do
+			if v:find("/") then
+				local split1 = split(v, "/")
+				if #split1 > 2 then
+					local domain = split1[2]
+					local upstream_dns = split1[#split1]
+					local upstream_dns_server
+					local upstream_dns_port = "53"
+					local dns_split = split(upstream_dns, "#")
+					if #dns_split > 1 then
+						upstream_dns_server = dns_split[1]
+						upstream_dns_port = dns_split[#dns_split]
+					else
+						upstream_dns_server = upstream_dns
+					end
+					dnsmasq_server_t[domain] = {
+						dnsmasq_dns = upstream_dns,
+						server = upstream_dns_server,
+						port = tonumber(upstream_dns_port)
+					}
+				end
+			end
+		end
+	end
+	return dnsmasq_server_t
 end

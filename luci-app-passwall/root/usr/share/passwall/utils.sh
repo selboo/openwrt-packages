@@ -64,18 +64,23 @@ get_enabled_anonymous_secs() {
 }
 
 get_geoip() {
+	local geo_output_path="$TMP_PATH2/geo_output"
+	mkdir -p ${geo_output_path}
 	local geoip_code="$1"
 	local geoip_type_flag=""
-	local geoip_path="$(config_t_get global_rules v2ray_location_asset "/usr/share/v2ray/")"
-	geoip_path="${geoip_path%*/}/geoip.dat"
-	local bin="$(first_type $(config_t_get global_app geoview_file) geoview)"
-	[ -n "$bin" ] && [ -s "$geoip_path" ] || { echo ""; return 1; }
-	case "$2" in
-		"ipv4") geoip_type_flag="-ipv6=false" ;;
-		"ipv6") geoip_type_flag="-ipv4=false" ;;
-	esac
-	"$bin" -input "$geoip_path" -list "$geoip_code" $geoip_type_flag -lowmem=true
-	return 0
+	local output_path="${geo_output_path}/geoip-${geoip_code}-$2"
+	[ ! -s "${output_path}" ] && {
+		local geoip_path="$(config_t_get global_rules v2ray_location_asset)"
+		geoip_path="${geoip_path%*/}/geoip.dat"
+		local bin="$(first_type $(config_t_get global_app geoview_file) geoview)"
+		[ -n "$bin" ] && [ -s "$geoip_path" ] || { echo ""; return; }
+		case "$2" in
+			"ipv4") geoip_type_flag="-ipv6=false" ;;
+			"ipv6") geoip_type_flag="-ipv4=false" ;;
+		esac
+		"$bin" -input "$geoip_path" -list "$geoip_code" $geoip_type_flag -lowmem=true -output ${output_path}
+	}
+	[ -s "${output_path}" ] && cat "${output_path}"
 }
 
 get_host_ip() {
@@ -333,7 +338,7 @@ eval_set_val() {
 eval_unset_val() {
 	for i in $@; do
 		for j in $i; do
-			eval unset j
+			eval unset $j
 		done
 	done
 }
@@ -352,6 +357,7 @@ set_cache_var() {
 	shift 1
 	local val="$@"
 	[ -n "${key}" ] && [ -n "${val}" ] && {
+		[ ! -d $TMP_PATH ] && mkdir -p $TMP_PATH
 		sed -i "/${key}=/d" $TMP_PATH/var >/dev/null 2>&1
 		echo "${key}=\"${val}\"" >> $TMP_PATH/var
 		eval ${key}=\"${val}\"
@@ -390,6 +396,8 @@ add_ip2route() {
 	local gateway device
 	network_get_gateway gateway "$2"
 	network_get_device device "$2"
+	[ -z "${device}" ] && device=$(ubus call "network.interface.$2" status 2>/dev/null | jsonfilter -e '@.device' 2>/dev/null)
+	[ -z "${device}" ] && [ -d "/sys/class/net/$2" ] && device="$2"
 	[ -z "${device}" ] && device="$2"
 
 	if [ -n "${gateway}" ]; then
@@ -448,6 +456,7 @@ ln_run() {
 			${file_func:-echolog " - ${ln_name}"} "$@" 2>&1 | logger -t PASSWALL_${protocol}_${ln_name} &
 		fi
 	fi
+	[ -n "$NO_REC_PROCESS" ] && return
 	process_count=$(ls $TMP_SCRIPT_FUNC_PATH | wc -l)
 	process_count=$((process_count + 1))
 	echo "${file_func:-echolog "  - ${ln_name}"} $@ >${output}" > $TMP_SCRIPT_FUNC_PATH/$process_count

@@ -13,6 +13,7 @@ TMP_BIN_PATH=${TMP_PATH}/bin
 TMP_IFACE_PATH=${TMP_PATH}/iface
 TMP_ROUTE_PATH=${TMP_PATH}/route
 TMP_SCRIPT_FUNC_PATH=${TMP_PATH}/script_func
+TMP_PROCESS_LIST_PATH=${TMP_PATH}/process_list
 
 . /lib/functions/network.sh
 
@@ -48,7 +49,7 @@ eval_set_val() {
 eval_unset_val() {
 	for i in $@; do
 		for j in $i; do
-			eval unset j
+			eval unset $j
 		done
 	done
 }
@@ -69,6 +70,7 @@ set_cache_var() {
 	shift 1
 	local val="$@"
 	[ -n "${key}" ] && [ -n "${val}" ] && {
+		[ ! -d $TMP_PATH ] && mkdir -p $TMP_PATH
 		sed -i "/${key}=/d" $TMP_PATH/var >/dev/null 2>&1
 		echo "${key}=\"${val}\"" >> $TMP_PATH/var
 		eval ${key}=\"${val}\"
@@ -149,17 +151,23 @@ get_enabled_anonymous_secs() {
 }
 
 get_geoip() {
+	local geo_output_path="$TMP_PATH2/geo_output"
+	mkdir -p ${geo_output_path}
 	local geoip_code="$1"
 	local geoip_type_flag=""
-	local geoip_path="$(config_t_get global_rules v2ray_location_asset)"
-	geoip_path="${geoip_path%*/}/geoip.dat"
-	local bin="$(first_type $(config_t_get global_app geoview_file) geoview)"
-	[ -n "$bin" ] && [ -s "$geoip_path" ] || { echo ""; return; }
-	case "$2" in
-		"ipv4") geoip_type_flag="-ipv6=false" ;;
-		"ipv6") geoip_type_flag="-ipv4=false" ;;
-	esac
-	"$bin" -input "$geoip_path" -list "$geoip_code" $geoip_type_flag -lowmem=true
+	local output_path="${geo_output_path}/geoip-${geoip_code}-$2"
+	[ ! -s "${output_path}" ] && {
+		local geoip_path="$(config_t_get global_rules v2ray_location_asset)"
+		geoip_path="${geoip_path%*/}/geoip.dat"
+		local bin="$(first_type $(config_t_get global_app geoview_file) geoview)"
+		[ -n "$bin" ] && [ -s "$geoip_path" ] || { echo ""; return; }
+		case "$2" in
+			"ipv4") geoip_type_flag="-ipv6=false" ;;
+			"ipv6") geoip_type_flag="-ipv4=false" ;;
+		esac
+		"$bin" -input "$geoip_path" -list "$geoip_code" $geoip_type_flag -lowmem=true -output ${output_path}
+	}
+	[ -s "${output_path}" ] && cat "${output_path}"
 }
 
 get_host_ip() {
@@ -342,6 +350,8 @@ add_ip2route() {
 	local gateway device
 	network_get_gateway gateway "$2"
 	network_get_device device "$2"
+	[ -z "${device}" ] && device=$(ubus call "network.interface.$2" status 2>/dev/null | jsonfilter -e '@.device' 2>/dev/null)
+	[ -z "${device}" ] && [ -d "/sys/class/net/$2" ] && device="$2"
 	[ -z "${device}" ] && device="$2"
 
 	if [ -n "${gateway}" ]; then
@@ -364,11 +374,12 @@ delete_ip2route() {
 }
 
 ln_run() {
-	local file_func=${1}
-	local ln_name=${2}
-	local output=${3}
+	local queue_run=${1}
+	local file_func=${2}
+	local ln_name=${3}
+	local output=${4}
+	shift 4;
 
-	shift 3;
 	if [  "${file_func%%/*}" != "${file_func}" ]; then
 		[ ! -L "${file_func}" ] && {
 			ln -s "${file_func}" "${TMP_BIN_PATH}/${ln_name}" >/dev/null 2>&1
@@ -378,16 +389,37 @@ ln_run() {
 	fi
 	#echo "${file_func} $*" >&2
 	[ -n "${file_func}" ] || log 1 "$(i18n "%s not found, unable to start..." "${ln_name}")"
+
+	[ "${queue_run}" == "1" ] && {
+		mkdir -p $TMP_PROCESS_LIST_PATH
+		process_count=$(ls $TMP_PROCESS_LIST_PATH | grep -v "^_" | wc -l)
+		process_count=$((process_count + 1))
+		echo "${file_func:-log 1 "${ln_name}"} $@ >${output}" > $TMP_PROCESS_LIST_PATH/$process_count
+		return
+	}
+
 	${file_func:-log 1 "${ln_name}"} "$@" >${output} 2>&1 &
 
-	local pid=${!}
-	#sleep 1s
-	#kill -0 ${pid} 2>/dev/null
-	#local status_code=${?}
+	[ -n "$NO_REC_PROCESS" ] && return
+
 	process_count=$(ls $TMP_SCRIPT_FUNC_PATH | grep -v "^_" | wc -l)
 	process_count=$((process_count + 1))
 	echo "${file_func:-log 1 "${ln_name}"} $@ >${output}" > $TMP_SCRIPT_FUNC_PATH/$process_count
-	#return ${status_code}
+}
+
+run_process_queue() {
+	[ -d ${TMP_PROCESS_LIST_PATH} ] && {
+		for filename in $(ls ${TMP_PROCESS_LIST_PATH}); do
+			cmd=$(cat ${TMP_PROCESS_LIST_PATH}/${filename})
+			cmd_check=$(echo $cmd | awk -F '>' '{print $1}')
+			icount=$(pgrep -f "$(echo $cmd_check)" | wc -l)
+			if [ $icount = 0 ]; then
+				eval $(echo "nohup ${cmd} 2>&1 &") >/dev/null 2>&1 &
+			fi
+			rm -rf ${TMP_PROCESS_LIST_PATH}/${filename}
+		done
+	}
+	rm -rf ${TMP_PROCESS_LIST_PATH}
 }
 
 kill_all() {
