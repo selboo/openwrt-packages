@@ -173,14 +173,14 @@ function gen_outbound(flag, node, tag, proxy_table)
 				tlsSettings = (node.stream_security == "tls") and {
 					serverName = node.tls_serverName,
 					allowInsecure = (function()
-								if node.tls_CertSha and node.tls_CertSha ~= "" then return nil end
+								if node.tls_pinSHA256 and node.tls_pinSHA256 ~= "" then return nil end
 								if api.compare_versions(os.date("%Y.%m.%d"), "<", "2026.6.1") and node.tls_allowInsecure == "1" then return true end
 							end)(),
 					fingerprint = (node.type == "Xray" and node.utls == "1" and node.fingerprint and node.fingerprint ~= "") and node.fingerprint or nil,
 					pinnedPeerCertSha256 = (function()
 								if api.compare_versions(xray_version, "<", "26.1.31") then return nil end
-								if not node.tls_CertSha then return "" end
-								return node.tls_CertSha
+								if not node.tls_pinSHA256 then return "" end
+								return node.tls_pinSHA256
 							end)(),
 					verifyPeerCertByName = (function()
 								if api.compare_versions(xray_version, "<", "26.1.31") then return nil end
@@ -217,13 +217,12 @@ function gen_outbound(flag, node, tag, proxy_table)
 					}
 				} or nil,
 				kcpSettings = (node.transport == "mkcp") and {
-					mtu = tonumber(node.mkcp_mtu),
-					tti = tonumber(node.mkcp_tti),
-					uplinkCapacity = tonumber(node.mkcp_uplinkCapacity),
-					downlinkCapacity = tonumber(node.mkcp_downlinkCapacity),
-					congestion = (node.mkcp_congestion == "1") and true or false,
-					readBufferSize = tonumber(node.mkcp_readBufferSize),
-					writeBufferSize = tonumber(node.mkcp_writeBufferSize)
+					mtu = (node.mkcp_mtu and node.mkcp_mtu ~= "") and tonumber(node.mkcp_mtu) or 1350,
+					tti = 50,
+					uplinkCapacity = 12,
+					downlinkCapacity = 100,
+					CwndMultiplier = 1,
+					MaxSendingWindow = 2 * 1024 * 1024
 				} or nil,
 				wsSettings = (node.transport == "ws") and {
 					path = node.ws_path or "/",
@@ -471,7 +470,6 @@ function gen_outbound(flag, node, tag, proxy_table)
 				finalQuery = true,
 				disableCache = false,
 				serveStale = true,
-				serveExpiredTTL = 30,
 			}
 		end
 
@@ -675,13 +673,12 @@ function gen_config_server(node)
 						}
 					} or nil,
 					kcpSettings = (node.transport == "mkcp") and {
-						mtu = tonumber(node.mkcp_mtu),
-						tti = tonumber(node.mkcp_tti),
-						uplinkCapacity = tonumber(node.mkcp_uplinkCapacity),
-						downlinkCapacity = tonumber(node.mkcp_downlinkCapacity),
-						congestion = (node.mkcp_congestion == "1") and true or false,
-						readBufferSize = tonumber(node.mkcp_readBufferSize),
-						writeBufferSize = tonumber(node.mkcp_writeBufferSize)
+						mtu = (node.mkcp_mtu and node.mkcp_mtu ~= "") and tonumber(node.mkcp_mtu) or 1350,
+						tti = 50,
+						uplinkCapacity = 12,
+						downlinkCapacity = 100,
+						CwndMultiplier = 1,
+						MaxSendingWindow = 2 * 1024 * 1024
 					} or nil,
 					wsSettings = (node.transport == "ws") and {
 						host = node.ws_host or nil,
@@ -1641,7 +1638,6 @@ function gen_config(var)
 					finalQuery = true,
 					disableCache = false,
 					serveStale = true,
-					serveExpiredTTL = 30,
 				})
 			end
 		end
@@ -1740,6 +1736,7 @@ function gen_config(var)
 							end
 						end
 						local dns_block_mode = "host"
+						dns_block_mode = ""
 						if dns_block_mode == "host" and dns_outboundTag == "blackhole" then
 							for d_i, d_k in ipairs(value.domain) do
 								dns.hosts[d_k] = "0.0.0.0"
@@ -2164,7 +2161,6 @@ function gen_front_dns_config(var)
 				finalQuery = true,
 				disableCache = false,
 				serveStale = true,
-				serveExpiredTTL = 30,
 			})
 		end
 	end
