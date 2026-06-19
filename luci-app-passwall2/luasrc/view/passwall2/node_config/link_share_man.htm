@@ -4,13 +4,12 @@ local api = require "luci.passwall2.api"
 local appname = api.appname
 local map = self.map
 
-local has_ss = api.is_finded("ss-redir")
 local has_ss_rust = api.is_finded("sslocal")
 local has_singbox = api.finded_com("sing-box")
 local has_xray = api.finded_com("xray")
 local has_hysteria2 = api.finded_com("hysteria")
 
-local ss_type = api.get_core("ss_type", {{has_ss,"shadowsocks-libev"},{has_ss_rust,"shadowsocks-rust"},{has_singbox,"sing-box"},{has_xray,"xray"}})
+local ss_type = api.get_core("ss_type", {{has_ss_rust,"shadowsocks-rust"},{has_singbox,"sing-box"},{has_xray,"xray"}})
 local trojan_type = api.get_core("trojan_type", {{has_singbox,"sing-box"},{has_xray,"xray"}})
 local vmess_type = api.get_core("vmess_type", {{has_xray,"xray"},{has_singbox,"sing-box"}})
 local vless_type = api.get_core("vless_type", {{has_xray,"xray"},{has_singbox,"sing-box"}})
@@ -165,10 +164,7 @@ local current_node = map:get(section)
 
 		var dom_prefix = null
 		var protocol = ""
-		if (v_type === "SS") {
-			dom_prefix = "ss_"
-			protocol = "ss"
-		} else if (v_type === "SS-Rust") {
+		if (v_type === "SS-Rust") {
 			dom_prefix = "ssrust_"
 			protocol = "ss"
 		} else if (v_type === "SSR") {
@@ -196,7 +192,7 @@ local current_node = map:get(section)
 			}
 		}
 		var url = null;
-		if (v_type === "SS" || v_type === "SS-Rust" || ((v_type === "sing-box" || v_type === "Xray") && opt.get(dom_prefix + "protocol").value === "shadowsocks")) {
+		if (v_type === "SS-Rust" || ((v_type === "sing-box" || v_type === "Xray") && opt.get(dom_prefix + "protocol").value === "shadowsocks")) {
 			protocol = "ss"
 			var v_port = opt.get(dom_prefix + "port");
 			var v_method = opt.get(dom_prefix + "method") || opt.get(dom_prefix + "ss_method");
@@ -402,16 +398,19 @@ local current_node = map:get(section)
 			} else if (v_transport === "grpc") {
 				info.path = opt.get(dom_prefix + "grpc_serviceName").value;
 			}
-			if (info.path && info.path != "") {
-				info.path = encodeURI(info.path);
-			}
 			info.net = v_transport;
 
 			info.security = opt.get(dom_prefix + "security").value || "auto";
+			info.scy = info.security;
 			if (opt.get(dom_prefix + "tls").checked) {
 				var v_security = "tls";
 				info.tls = "tls";
 				info.sni = opt.get(dom_prefix + "tls_serverName").value;
+				info.alpn = opt.get(dom_prefix + "alpn")?.value;
+				if (info.alpn === "default") info.alpn = undefined;
+				info.fp = opt.get(dom_prefix + "fingerprint")?.value;
+				info.pcs = opt.get(dom_prefix + "tls_pinSHA256")?.value;
+				opt.get(dom_prefix + "tls_allowInsecure")?.checked && (info.insecure = "1");
 			}
 
 			opt.get(dom_prefix + "tcp_fast_open")?.checked && (info.tfo = "1");
@@ -599,10 +598,10 @@ local current_node = map:get(section)
 			
 			if (v_type === "Hysteria2") {
 				v_password = opt.get("hysteria2_auth_password");
-				var dom_obfs = opt.get("hysteria2_obfs");
+				var dom_obfs = opt.get("hysteria2_obfs_password");
 				if (dom_obfs && dom_obfs.value != "") {
-					params += "&obfs=" + "salamander";
-					params += opt.query("obfs-password", "hysteria2_obfs");
+					params += opt.query("obfs", "hysteria2_obfs_type");
+					params += opt.query("obfs-password", "hysteria2_obfs_password");
 				}
 				params += opt.query("mport", "hysteria2_hop");
 			} else {
@@ -1000,14 +999,6 @@ local current_node = map:get(section)
 			} else if (ss_type == "shadowsocks-rust") {
 				dom_prefix = "ssrust_"
 				opt.set('type', "SS-Rust");
-			} else {
-				if (["2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305"].includes(method)) {
-					dom_prefix = "ssrust_"
-					opt.set('type', "SS-Rust");
-				} else {
-					dom_prefix = "ss_"
-					opt.set('type', "SS");
-				}
 			}
 
 			const _method = (method || "none").toLowerCase();
@@ -1344,9 +1335,16 @@ local current_node = map:get(section)
 			opt.set(dom_prefix + 'address', unbracketIP(ssm.add));
 			opt.set(dom_prefix + 'port', ssm.port);
 			opt.set(dom_prefix + 'uuid', ssm.id);
+			opt.set(dom_prefix + 'security', ssm.security || ssm.scy || "auto");
 			opt.set(dom_prefix + 'tls', ssm.tls === "tls");
 			if (ssm.tls === "tls") {
 				opt.set(dom_prefix + 'tls_serverName', ssm.sni || ssm.host);
+				opt.set(dom_prefix + 'alpn', ssm.alpn || "default");
+				if (ssm.fp && ssm.fp !== "") {
+					opt.set(dom_prefix + 'utls', true);
+					opt.set(dom_prefix + 'fingerprint', ssm.fp);
+				}
+				opt.set(dom_prefix + 'tls_pinSHA256', ssm.pcs || "");
 				opt.set(
 					dom_prefix + 'tls_allowInsecure',
 					!((ssm.allowinsecure ?? '0') === '0' && (ssm.allowInsecure ?? '0') === '0' && (ssm.insecure ?? '0') === '0')
@@ -1600,7 +1598,7 @@ local current_node = map:get(section)
 				opt.set(dom_prefix + 'protocol', "hysteria2");
 				opt.set(dom_prefix + 'hysteria2_auth_password', decodeURIComponent(password));
 				if (queryParam["obfs-password"] || queryParam["obfs_password"]) {
-					opt.set(dom_prefix + 'hysteria2_obfs_type', "salamander");
+					opt.set(dom_prefix + 'hysteria2_obfs_type', queryParam.obfs || "salamander");
 					opt.set(dom_prefix + 'hysteria2_obfs_password', queryParam["obfs-password"] || queryParam["obfs_password"]);
 				}
 				opt.set(dom_prefix + 'hysteria2_hop', queryParam.mport || "");
@@ -1611,7 +1609,8 @@ local current_node = map:get(section)
 				dom_prefix = "hysteria2_"
 				opt.set(dom_prefix + 'auth_password', decodeURIComponent(password));
 				if (queryParam["obfs-password"] || queryParam["obfs_password"]) {
-					opt.set(dom_prefix + 'obfs', queryParam["obfs-password"] || queryParam["obfs_password"]);
+					opt.set(dom_prefix + 'obfs_type', queryParam.obfs || "salamander");
+					opt.set(dom_prefix + 'obfs_password', queryParam["obfs-password"] || queryParam["obfs_password"]);
 				}
 				opt.set(dom_prefix + 'hop', queryParam.mport || "");
 			}
@@ -1668,7 +1667,7 @@ local current_node = map:get(section)
 			}
 			opt.set(dom_prefix + 'tuic_congestion_control', queryParam.congestion_control || 'cubic');
 			opt.set(dom_prefix + 'tuic_udp_relay_mode', queryParam.udp_relay_mode || 'native');
-			opt.set(dom_prefix + 'tuic_alpn', queryParam.alpn || 'default');
+			opt.set(dom_prefix + 'tuic_alpn', queryParam.alpn || 'h3');
 			opt.set(dom_prefix + 'tls_serverName', queryParam.sni || '');
 			opt.set(dom_prefix + 'tls_disable_sni', queryParam.disable_sni === "1");
 			opt.set(
@@ -1792,7 +1791,8 @@ local current_node = map:get(section)
 				opt.get(dom_prefix + 'port').blur();
 			}
 		} else {
-			s.innerHTML = "<font color='red'><%:Invalid Share URL Format%></font>: " + ssu[0];
+			s.innerHTML = "<font color='red'><%:Invalid Share URL Format%></font>";
+			sessionStorage.removeItem("fromUrl");
 			return false;
 		}
 		s.innerHTML = "<font color='green'><%:Import Finished %></font>";

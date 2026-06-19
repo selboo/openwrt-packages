@@ -23,8 +23,8 @@ local uci = api.uci
 local fs = api.fs
 local log = api.log
 local i18n = api.i18n
+local lyaml = require "lyaml"
 
-local has_ss = api.is_finded("ss-redir")
 local has_ss_rust = api.is_finded("sslocal")
 local has_ssr = api.is_finded("ssr-local") and api.is_finded("ssr-redir")
 local has_singbox = api.finded_com("sing-box")
@@ -35,7 +35,7 @@ local DEFAULT_FILTER_KEYWORD_MODE = uci:get(appname, "@global_subscribe[0]", "fi
 local DEFAULT_FILTER_KEYWORD_DISCARD_LIST = uci:get(appname, "@global_subscribe[0]", "filter_discard_list") or {}
 local DEFAULT_FILTER_KEYWORD_KEEP_LIST = uci:get(appname, "@global_subscribe[0]", "filter_keep_list") or {}
 -- Nodes should be retrieved using the core type (if not set on the node subscription page, the default type will be used automatically).
-local DEFAULT_SS_TYPE = api.get_core("ss_type", {{has_ss,"shadowsocks-libev"},{has_ss_rust,"shadowsocks-rust"},{has_singbox,"sing-box"},{has_xray,"xray"}})
+local DEFAULT_SS_TYPE = api.get_core("ss_type", {{has_ss_rust,"shadowsocks-rust"},{has_singbox,"sing-box"},{has_xray,"xray"}})
 local DEFAULT_TROJAN_TYPE = api.get_core("trojan_type", {{has_singbox,"sing-box"},{has_xray,"xray"}})
 local DEFAULT_VMESS_TYPE = api.get_core("vmess_type", {{has_xray,"xray"},{has_singbox,"sing-box"}})
 local DEFAULT_VLESS_TYPE = api.get_core("vless_type", {{has_xray,"xray"},{has_singbox,"sing-box"}})
@@ -43,7 +43,6 @@ local DEFAULT_HYSTERIA2_TYPE = api.get_core("hysteria2_type", {{has_hysteria2,"h
 local core_has = {
 	["xray"] = has_xray,
 	["sing-box"] = has_singbox,
-	["shadowsocks-libev"] = has_ss,
 	["shadowsocks-rust"] = has_ss_rust,
 	["hysteria2"] = has_hysteria2
 }
@@ -459,9 +458,7 @@ end
 
 -- Configure the SS protocol implementation type
 local function set_ss_implementation(ss_type, result)
-	if ss_type == "shadowsocks-libev" and has_ss then
-		result.type = "SS"
-	elseif ss_type == "shadowsocks-rust" and has_ss_rust then
+	if ss_type == "shadowsocks-rust" and has_ss_rust then
 		result.type = 'SS-Rust'
 	elseif ss_type == "xray" and has_xray then
 		result.type = 'Xray'
@@ -477,15 +474,14 @@ local function set_ss_implementation(ss_type, result)
 	return result
 end
 
--- Processing data
-local function processData(szType, content, add_mode, group, sub_cfg)
-	--log(2, content, add_mode, group)
+local function parseClashNode(node, add_mode, group, sub_cfg)
 	local sub_allowinsecure = DEFAULT_ALLOWINSECURE
 	local sub_ss_type = DEFAULT_SS_TYPE
 	local sub_trojan_type = DEFAULT_TROJAN_TYPE
 	local sub_vmess_type = DEFAULT_VMESS_TYPE
 	local sub_vless_type = DEFAULT_VLESS_TYPE
 	local sub_hysteria2_type = DEFAULT_HYSTERIA2_TYPE
+	local sub_hy_up_mbps, sub_hy_down_mbps = 1000, 1000
 	if sub_cfg then
 		if sub_cfg.allowInsecure and sub_cfg.allowInsecure ~= "1" then
 			sub_allowinsecure = nil
@@ -510,6 +506,318 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		if hysteria2_type ~= "global" and core_has[hysteria2_type] then
 			sub_hysteria2_type = hysteria2_type
 		end
+		sub_hy_up_mbps = sub_cfg.hysteria_up_mbps
+		sub_hy_down_mbps = sub_cfg.hysteria_down_mbps
+	end
+	local result = {
+		timeout = 60,
+		add_mode = add_mode, -- `0` for manual configuration, `1` for import, `2` for subscription
+		group = group
+	}
+	result.remarks = node.name
+	result.address = node.server
+	result.port = node.port
+
+	if node.type == 'ss' then
+		result = set_ss_implementation(sub_ss_type, result)
+		if not result then return nil end
+		result.method = node.cipher
+		result.password = node.password
+		if node.plugin == "obfs" then
+			result.plugin = "obfs-local"
+		elseif node.plugin == "v2ray-plugin" then
+			result.plugin = "v2ray-plugin"
+		end
+		if result.plugin then
+			result.plugin_enabled = "1"
+			if result.type == 'Xray' then
+				if result.plugin ~= "obfs-local" then
+					result.plugin_enabled = nil
+					result.error_msg = i18n.translatef("%s unsupport SS %s plugin.", "Xray", result.plugin)
+				end
+			elseif result.type == 'sing-box' then
+				if result.plugin ~= "obfs-local" and result.plugin ~= "v2ray-plugin" then
+					result.plugin_enabled = nil
+					result.error_msg = i18n.translatef("%s unsupport SS %s plugin.", "Sing-Box", result.plugin)
+				end
+			end
+			if node["plugin-opts"] and result.plugin_enabled == "1" then
+				if node.plugin == "obfs" then
+					local plugin_opts = ""
+					local opts_mode = node["plugin-opts"].mode
+					if opts_mode then
+						plugin_opts = plugin_opts .. "obfs=" .. opts_mode .. ";"
+					end
+					local opts_host = node["plugin-opts"].host
+					if opts_host then
+						plugin_opts = plugin_opts .. "obfs-host=" .. opts_host
+					end
+					result.plugin_opts = plugin_opts
+				elseif node.plugin == "v2ray-plugin" then
+					local plugin_opts = ""
+					local opts_mode = node["plugin-opts"].mode
+					local opts_tls = node["plugin-opts"].tls
+					if opts_tls then
+						plugin_opts = plugin_opts .. "tls;"
+					end
+					local opts_skip_cert_verify = node["plugin-opts"]["skip-cert-verify"]
+					local opts_host = node["plugin-opts"].host
+					if opts_host then
+						plugin_opts = plugin_opts .. "host=" .. opts_host .. ";"
+					end
+					local opts_path = node["plugin-opts"].path
+					local opts_mux = node["plugin-opts"].mux
+					if node["plugin-opts"].headers then
+						--todo
+					end
+					result.plugin_opts = plugin_opts
+				end
+			end
+		end
+	elseif node.type == 'ssr' then
+		if not has_ssr then
+			log(2, i18n.translatef("Skipping the %s node is due to incompatibility with the %s core program or incorrect node usage type settings.", "SSR", "shadowsocksr-libev"))
+			return nil
+		end
+		result.type = "SSR"
+		result.method = node.cipher
+		result.password = node.password
+		result.obfs = node.obfs
+		result.protocol = node.protocol
+		result.obfs_param = node["obfs-param"]
+		result.protocol_param = node["protocol-param"]
+	elseif node.type == 'vmess' then
+		if sub_vmess_type == "sing-box" and has_singbox then
+			result.type = 'sing-box'
+		elseif sub_vmess_type == "xray" and has_xray then
+			result.type = "Xray"
+		else
+			log(2, i18n.translatef("Skipping the %s node is due to incompatibility with the %s core program or incorrect node usage type settings.", "VMess", "VMess"))
+			return nil
+		end
+		result.protocol = 'vmess'
+		result.uuid = node.uuid
+		result.alter_id = node.alterId
+		result.security = node.cipher or "auto"
+		result.tcp_fast_open = node.tfo
+		result.tls = "0"
+		if node.tls then
+			result.tls = "1"
+			result.tls_serverName = node.servername or ""
+			local insecure = node["skip-cert-verify"]
+			result.tls_allowInsecure = insecure and "1" or "0"
+			if sub_allowinsecure then
+				result.tls_allowInsecure = "1"
+			end
+		end
+		result.transport = node.network and string.lower(node.network) or "tcp"
+		if result.type == "sing-box" and result.transport == "raw" then 
+			result.transport = "tcp"
+		elseif result.type == "Xray" and result.transport == "tcp" then
+			result.transport = "raw"
+		end
+		if result.transport == 'ws' then
+			local ws_opts = node["ws-opts"]
+			if ws_opts then
+				if ws_opts.headers then
+					result.ws_host = ws_opts.headers.Host or ws_opts.headers.host
+				end
+				if ws_opts.path then
+					result.ws_path = ws_opts.path
+					if ws_opts["max-early-data"] then
+						if result.type == "sing-box" then
+							result.ws_enableEarlyData = "1"
+							result.ws_maxEarlyData = tonumber(ws_opts["max-early-data"])
+							result.ws_earlyDataHeaderName = "Sec-WebSocket-Protocol"
+						elseif result.type == "Xray" then
+							result.ws_path = result.ws_path .. "?ed=" .. ws_opts["max-early-data"]
+						end
+					end
+				end
+			end
+		elseif result.transport == 'h2' then
+			local h2_opts = node["h2-opts"]
+			if h2_opts then
+				if result.type == "sing-box" then
+					result.http_path = h2_opts.path
+					result.http_host = h2_opts.host
+				elseif result.type == "Xray" then
+					result.xhttp_mode = "stream-one"
+					result.xhttp_path = h2_opts.path
+					result.xhttp_host = h2_opts.host
+				end
+			end
+		elseif result.transport == 'grpc' then
+			local grpc_opts = node["grpc-opts"]
+			if grpc_opts then
+				result.grpc_serviceName = grpc_opts["grpc-service-name"]
+			end
+		end
+	elseif node.type == 'vless' then
+		if sub_vless_type == "sing-box" and has_singbox then
+			result.type = 'sing-box'
+		elseif sub_vless_type == "xray" and has_xray then
+			result.type = "Xray"
+		else
+			log(2, i18n.translatef("Skipping the %s node is due to incompatibility with the %s core program or incorrect node usage type settings.", "VLESS", "VLESS"))
+			return nil
+		end
+		result.protocol = "vless"
+		result.uuid = node.uuid
+		result.tcp_fast_open = node.tfo
+		result.encryption = node.cipher or "none"
+		result.flow = node.flow
+		result.tls = "0"
+		if node.tls then
+			result.tls = "1"
+			result.tls_serverName = node.servername or ""
+			local insecure = node["skip-cert-verify"]
+			result.tls_allowInsecure = insecure and "1" or "0"
+			if sub_allowinsecure then
+				result.tls_allowInsecure = "1"
+			end
+		end
+		if node.tls and node["reality-opts"] and node["reality-opts"]["public-key"] then
+			result.reality = "1"
+			result.reality_publicKey = (node["reality-opts"] and node["reality-opts"]["public-key"]) or nil
+			result.reality_shortId = (node["reality-opts"] and node["reality-opts"]["short-id"]) or nil
+		end
+		result.transport = node.network and string.lower(node.network) or "tcp"
+		if result.type == "sing-box" and result.transport == "raw" then 
+			result.transport = "tcp"
+		elseif result.type == "Xray" and result.transport == "tcp" then
+			result.transport = "raw"
+		end
+		if result.transport == 'ws' then
+			local ws_opts = node["ws-opts"]
+			if ws_opts then
+				if ws_opts.headers then
+					result.ws_host = ws_opts.headers.Host or ws_opts.headers.host
+				end
+				if ws_opts.path then
+					result.ws_path = ws_opts.path
+					if ws_opts["max-early-data"] then
+						if result.type == "sing-box" then
+							result.ws_enableEarlyData = "1"
+							result.ws_maxEarlyData = tonumber(ws_opts["max-early-data"])
+							result.ws_earlyDataHeaderName = "Sec-WebSocket-Protocol"
+						elseif result.type == "Xray" then
+							result.ws_path = result.ws_path .. "?ed=" .. ws_opts["max-early-data"]
+						end
+					end
+				end
+			end
+		end
+	elseif node.type == 'trojan' then
+		if sub_trojan_type == "sing-box" and has_singbox then
+			result.type = 'sing-box'
+			result.protocol = 'trojan'
+		elseif sub_trojan_type == "xray" and has_xray then
+			result.type = 'Xray'
+			result.protocol = 'trojan'
+		else
+			log(2, i18n.translatef("Skipping the %s node is due to incompatibility with the %s core program or incorrect node usage type settings.", "Trojan", "Trojan"))
+			return nil
+		end
+		result.password = node.password
+		result.tls = '1'
+		result.tls_serverName = node.sni or ""
+		local insecure = node["skip-cert-verify"]
+		result.tls_allowInsecure = insecure and "1" or "0"
+		if sub_allowinsecure then
+			result.tls_allowInsecure = "1"
+		end
+		if node.alpn then
+			--todo
+		end
+		if node.network == "grpc" then
+			if node["grpc-opts"] then
+				result.grpc_serviceName = node["grpc-opts"]["grpc-service-name"]
+			end
+		elseif node.network == "ws" then
+			local ws_opts = node["ws-opts"]
+			if ws_opts then
+				result.ws_path = ws_opts.path
+				if ws_opts.headers then
+					result.ws_host = ws_opts.headers.Host or ws_opts.headers.host
+				end
+			end
+		end
+	elseif node.type == 'anytls' then
+		if has_singbox then
+			result.type = 'sing-box'
+			result.protocol = "anytls"
+		else
+			log(2, i18n.translatef("Skip the %s node because the %s core program is not installed.", "AnyTLS", "AnyTLS", "Sing-Box 1.12"))
+			return nil
+		end
+		result.password = node.password
+		result.tls = '1'
+		result.tls_serverName = node.sni or ""
+		local insecure = node["skip-cert-verify"]
+		result.tls_allowInsecure = insecure and "1" or "0"
+		if sub_allowinsecure then
+			result.tls_allowInsecure = "1"
+		end
+	end
+	if not result.remarks or result.remarks == "" then
+		if result.address and result.port then
+			result.remarks = result.address .. ':' .. result.port
+		else
+			result.remarks = "NULL"
+		end
+	end
+	return result
+end
+
+-- Processing Clash data
+local function processClashData(content, add_mode, group, sub_cfg)
+	local results = {}
+	for i, node in ipairs(content.proxies or {}) do
+		local result = parseClashNode(node, add_mode, group, sub_cfg)
+		if result then
+			table.insert(results, result)
+		end
+	end
+	return results
+end
+
+-- Processing data
+local function processData(szType, content, add_mode, group, sub_cfg)
+	--log(2, content, add_mode, group)
+	local sub_allowinsecure = DEFAULT_ALLOWINSECURE
+	local sub_ss_type = DEFAULT_SS_TYPE
+	local sub_trojan_type = DEFAULT_TROJAN_TYPE
+	local sub_vmess_type = DEFAULT_VMESS_TYPE
+	local sub_vless_type = DEFAULT_VLESS_TYPE
+	local sub_hysteria2_type = DEFAULT_HYSTERIA2_TYPE
+	local sub_hy_up_mbps, sub_hy_down_mbps = 1000, 1000
+	if sub_cfg then
+		if sub_cfg.allowInsecure and sub_cfg.allowInsecure ~= "1" then
+			sub_allowinsecure = nil
+		end
+		local ss_type = sub_cfg.ss_type or "global"
+		if ss_type ~= "global" and core_has[ss_type] then
+			sub_ss_type = ss_type
+		end
+		local trojan_type = sub_cfg.trojan_type or "global"
+		if trojan_type ~= "global" and core_has[trojan_type] then
+			sub_trojan_type = trojan_type
+		end
+		local vmess_type = sub_cfg.vmess_type or "global"
+		if vmess_type ~= "global" and core_has[vmess_type] then
+			sub_vmess_type = vmess_type
+		end
+		local vless_type = sub_cfg.vless_type or "global"
+		if vless_type ~= "global" and core_has[vless_type] then
+			sub_vless_type = vless_type
+		end
+		local hysteria2_type = sub_cfg.hysteria2_type or "global"
+		if hysteria2_type ~= "global" and core_has[hysteria2_type] then
+			sub_hysteria2_type = hysteria2_type
+		end
+		sub_hy_up_mbps = sub_cfg.hysteria_up_mbps
+		sub_hy_down_mbps = sub_cfg.hysteria_down_mbps
 	end
 	local result = {
 		timeout = 60,
@@ -650,9 +958,14 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			result.httpupgrade_host = info.host
 			result.httpupgrade_path = info.path
 		end
-		if not info.security then result.security = "auto" end
+		result.security = info.security or info.scy or "auto"
 		if info.tls == "tls" or info.tls == "1" then
 			result.tls = "1"
+			result.alpn = info.alpn
+			if info.fp and info.fp ~= "" then
+				result.utls = "1"
+				result.fingerprint = info.fp
+			end
 			result.tls_serverName = (info.sni and info.sni ~= "") and info.sni or info.host
 			result.tls_pinSHA256 = info.pcs
 			result.tls_CertByName = info.vcn
@@ -660,6 +973,11 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
 		else
 			result.tls = "0"
+		end
+
+		if info.ech and info.ech ~= "" then
+			result.ech = "1"
+			result.ech_config = info.ech
 		end
 
 		result.tcp_fast_open = info.tfo
@@ -791,7 +1109,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 				if result.type == 'Xray' then
 					-- The obfs-local plugin converts data to a format supported by xray.
 					if result.plugin ~= "obfs-local" then
-						result.error_msg = i18n.translatef("Xray unsupport %s plugin.", result.plugin)
+						result.error_msg = i18n.translatef("%s unsupport SS %s plugin.", "Xray", result.plugin)
 					else
 						local obfs = result.plugin_opts:match("obfs=([^;]+)") or ""
 						local obfs_host = result.plugin_opts:match("obfs%-host=([^;]+)") or ""
@@ -811,22 +1129,14 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 						result.plugin = nil
 						result.plugin_opts = nil
 					end
+				elseif result.type == 'sing-box' then
+					if result.plugin ~= "obfs-local" and result.plugin ~= "v2ray-plugin" then
+						result.error_msg = i18n.translatef("%s unsupport SS %s plugin.", "Sing-Box", result.plugin)
+					else
+						result.plugin_enabled = "1"
+					end
 				else
 					result.plugin_enabled = "1"
-				end
-			end
-
-			if result.type == "SS" then
-				local aead2022_methods = { "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305" }
-				local aead2022 = false
-				for k, v in ipairs(aead2022_methods) do
-					if method:lower() == v:lower() then
-						aead2022 = true
-					end
-				end
-				if aead2022 then
-					-- shadowsocks-libev does not support 2022 encryption.
-					result.error_msg = i18n.translatef("shadowsocks-libev unsupport 2022 encryption.")
 				end
 			end
 
@@ -843,7 +1153,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 				else
 					result.transport = params.type
 				end
-				if result.type ~= "SS-Rust" and result.type ~= "SS" then
+				if result.type ~= "SS-Rust" then
 					if params.type == 'ws' then
 						result.ws_host = params.host
 						result.ws_path = params.path
@@ -938,7 +1248,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 					local insecure = params.allowinsecure or params.allowInsecure or params.insecure
 					result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
 					result.uot = params.udp
-				elseif (params.type ~= "tcp" and params.type ~= "raw") and (params.headerType and params.headerType ~= "none") then
+				else
 					result.error_msg = i18n.translatef("Please replace Xray or Sing-Box to support more transmission methods in Shadowsocks.")
 				end
 			end
@@ -1350,8 +1660,8 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		local insecure = params.allowinsecure or params.allowInsecure or params.insecure
 		result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
 		result.alpn = params.alpn
-		result.hysteria_up_mbps = params.upmbps
-		result.hysteria_down_mbps = params.downmbps
+		result.hysteria_up_mbps = params.upmbps or sub_hy_up_mbps
+		result.hysteria_down_mbps = params.downmbps or sub_hy_down_mbps
 		result.hysteria_hop = params.mport
 
 	elseif szType == 'hysteria2' or szType == 'hy2' then
@@ -1395,23 +1705,22 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		result.tls_CertByName = params.vcn
 		local insecure = params.allowinsecure or params.insecure
 		result.tls_allowInsecure = (insecure == "1" or insecure == "0") and insecure or (sub_allowinsecure and "1" or "0")
+		result.hysteria2_up_mbps = params.upmbps or sub_hy_up_mbps
+		result.hysteria2_down_mbps = params.downmbps or sub_hy_down_mbps
 		result.hysteria2_hop = params.mport
+		if params["obfs-password"] or params["obfs_password"] then
+			result.hysteria2_obfs_type = params.obfs or "salamander"
+			result.hysteria2_obfs_password = params["obfs-password"] or params["obfs_password"]
+		end
 
 		if (sub_hysteria2_type == "sing-box" and has_singbox) or (sub_hysteria2_type == "xray" and has_xray) then
 			local is_singbox = sub_hysteria2_type == "sing-box" and has_singbox
 			result.type = is_singbox and 'sing-box' or 'Xray'
 			result.protocol = "hysteria2"
-			if params["obfs-password"] or params["obfs_password"] then
-				result.hysteria2_obfs_type = "salamander"
-				result.hysteria2_obfs_password = params["obfs-password"] or params["obfs_password"]
-			end
 			result.use_finalmask = (params.fm and params.fm ~= "") and "1" or nil
 			result.finalmask = (params.fm and params.fm ~= "") and api.base64Encode(params.fm) or nil
 		elseif has_hysteria2 then
 			result.type = "Hysteria2"
-			if params["obfs-password"] or params["obfs_password"] then
-				result.hysteria2_obfs = params["obfs-password"] or params["obfs_password"]
-			end
 		else
 			log(2, i18n.translatef("Skipping the %s node is due to incompatibility with the %s core program or incorrect node usage type settings.", "Hysteria2", "Hysteria2"))
 			return nil
@@ -1469,7 +1778,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		end
 		result.tls_serverName = params.sni
 		result.tls_disable_sni = params.disable_sni
-		result.tuic_alpn = params.alpn or "default"
+		result.tuic_alpn = params.alpn or "h3"
 		result.tuic_congestion_control = params.congestion_control or "cubic"
 		result.tuic_udp_relay_mode = params.udp_relay_mode or "native"
 		local insecure = params.allowinsecure or params.insecure or params.allow_insecure
@@ -1533,6 +1842,10 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 					result.reality = "1"
 					result.reality_publicKey = params.pbk or nil
 					result.reality_shortId = params.sid or nil
+				end
+				if params.ech and params.ech ~= "" then
+					result.ech = "1"
+					result.ech_config = params.ech
 				end
 			end
 			result.port = port
@@ -1624,7 +1937,6 @@ local function curl(url, file, ua, mode)
 		ua = (ua == "passwall2") and ("passwall2/" .. api.get_version()) or ua
 		curl_args[#curl_args + 1] = '--user-agent "' .. ua .. '"'
 	end
-	curl_args[#curl_args + 1] = get_headers()
 	local return_code, result
 	if mode == "direct" then
 		return_code, result = api.curl_direct(url, file, curl_args)
@@ -1634,57 +1946,6 @@ local function curl(url, file, ua, mode)
 		return_code, result = api.curl_auto(url, file, curl_args)
 	end
 	return return_code, tonumber(result)
-end
-
-function get_headers()
-	local cache_file = "/tmp/etc/" .. appname .. "_tmp/sub_curl_headers"
-	if fs.access(cache_file) then
-		return luci.sys.exec("cat " .. cache_file)
-	end
-	local headers = {}
-
-	local function readfile(path)
-		local f = io.open(path, "r")
-		if not f then return nil end
-		local c = f:read("*a")
-		f:close()
-		return api.trim(c)
-	end
-
-	headers[#headers + 1] = "x-device-os: OpenWrt"
-
-	local rel = readfile("/etc/openwrt_release")
-	local os_ver = rel and rel:match("DISTRIB_RELEASE='([^']+)'")
-	if os_ver then
-		headers[#headers + 1] = "x-ver-os: " .. os_ver
-	end
-
-	local model = readfile("/tmp/sysinfo/model")
-	if model then
-		headers[#headers + 1] = "x-device-model: " .. model
-	end
-
-	local mac = readfile("/sys/class/net/eth0/address")
-	if mac and model then
-		local raw = mac .. "-" .. model
-		local p = io.popen("printf '%s' '" .. raw:gsub("'", "'\\''") .. "' | sha256sum")
-		if p then
-			local hash = p:read("*l")
-			p:close()
-			hash = hash and hash:match("^%w+")
-			if hash then
-				headers[#headers + 1] = "x-hwid: " .. hash
-			end
-		end
-	end
-
-	local out = {}
-	for i = 1, #headers do
-		out[i] = "-H '" .. headers[i]:gsub("'", "'\\''") .. "'"
-	end
-	local headers_str = table.concat(out, " ")
-	local f = io.open(cache_file, "w"); if f then f:write(headers_str); f:close() end
-	return headers_str
 end
 
 local function truncate_nodes(group)
@@ -1757,12 +2018,12 @@ local function select_node(nodes, config, parentConfig)
 				end
 			end
 		end
-		-- First priority: Type + Notes + IP + Port
+		-- First priority: Type + Notes + IP + Port + Group
 		if not server then
 			for index, node in pairs(nodes) do
 				if config.currentNode.type and config.currentNode.remarks and config.currentNode.address and config.currentNode.port then
 					if node.type and node.remarks and node.address and node.port then
-						if node.type == config.currentNode.type and node.remarks == config.currentNode.remarks and (node.address .. ':' .. node.port == config.currentNode.address .. ':' .. config.currentNode.port) then
+						if node.type == config.currentNode.type and node.remarks == config.currentNode.remarks and (node.address .. ':' .. node.port == config.currentNode.address .. ':' .. config.currentNode.port) and node.group == config.currentNode.group then
 							if config.log == nil or config.log == true then
 								log(log_level, i18n.translatef("Update [%s]", config.remarks) .. " " .. i18n.translatef("First Matching node:") .. " " .. node.remarks)
 							end
@@ -1773,12 +2034,12 @@ local function select_node(nodes, config, parentConfig)
 				end
 			end
 		end
-		-- Second priority: Type + IP + Port
+		-- Second priority: Type + IP + Port + Group
 		if not server then
 			for index, node in pairs(nodes) do
 				if config.currentNode.type and config.currentNode.address and config.currentNode.port then
 					if node.type and node.address and node.port then
-						if node.type == config.currentNode.type and (node.address .. ':' .. node.port == config.currentNode.address .. ':' .. config.currentNode.port) then
+						if node.type == config.currentNode.type and (node.address .. ':' .. node.port == config.currentNode.address .. ':' .. config.currentNode.port) and node.group == config.currentNode.group then
 							if config.log == nil or config.log == true then
 								log(log_level, i18n.translatef("Update [%s]", config.remarks) .. " " .. i18n.translatef("Second Matching node:") .. " " .. node.remarks)
 							end
@@ -1789,12 +2050,12 @@ local function select_node(nodes, config, parentConfig)
 				end
 			end
 		end
-		-- Third priority: IP + Port
+		-- Third priority: IP + Port + Group
 		if not server then
 			for index, node in pairs(nodes) do
 				if config.currentNode.address and config.currentNode.port then
 					if node.address and node.port then
-						if node.address .. ':' .. node.port == config.currentNode.address .. ':' .. config.currentNode.port then
+						if node.address .. ':' .. node.port == config.currentNode.address .. ':' .. config.currentNode.port and node.group == config.currentNode.group then
 							if config.log == nil or config.log == true then
 								log(log_level, i18n.translatef("Update [%s]", config.remarks) .. " " .. i18n.translatef("Third Matching node:") .. " " .. node.remarks)
 							end
@@ -1805,12 +2066,12 @@ local function select_node(nodes, config, parentConfig)
 				end
 			end
 		end
-		-- Fourth priority: IP
+		-- Fourth priority: IP + Group
 		if not server then
 			for index, node in pairs(nodes) do
 				if config.currentNode.address then
 					if node.address then
-						if node.address == config.currentNode.address then
+						if node.address == config.currentNode.address and node.group == config.currentNode.group then
 							if config.log == nil or config.log == true then
 								log(log_level, i18n.translatef("Update [%s]", config.remarks) .. " " .. i18n.translatef("Fourth Matching node:") .. " " .. node.remarks)
 							end
@@ -1821,12 +2082,12 @@ local function select_node(nodes, config, parentConfig)
 				end
 			end
 		end
-		-- Fifth priority: remarks
+		-- Fifth priority: remarks + Group
 		if not server then
 			for index, node in pairs(nodes) do
 				if config.currentNode.remarks then
 					if node.remarks then
-						if node.remarks == config.currentNode.remarks then
+						if node.remarks == config.currentNode.remarks and node.group == config.currentNode.group then
 							if config.log == nil or config.log == true then
 								log(log_level, i18n.translatef("Update [%s]", config.remarks) .. " " .. i18n.translatef("Fifth Matching node:") .. " " .. node.remarks)
 							end
@@ -1886,7 +2147,7 @@ local function update_node(manual)
 		local list = v["list"]
 		local sub_cfg = v["sub_cfg"]
 		local domain_resolver, domain_resolver_dns, domain_resolver_dns_https, domain_strategy
-		local preproxy_node_group, to_node_group, chain_node_type = "", "", ""
+		local preproxy_node_group, to_node_group, outbound_iface_group, chain_node_type = "", "", "", ""
 		-- Subscription Group Chain Agent
 		local function valid_chain_node(node)
 			if not node then return "" end
@@ -1906,6 +2167,8 @@ local function update_node(manual)
 			domain_strategy = (sub_cfg.domain_strategy == "UseIPv4" or sub_cfg.domain_strategy == "UseIPv6") and sub_cfg.domain_strategy or nil
 			preproxy_node_group = (sub_cfg.chain_proxy == "1") and valid_chain_node(sub_cfg.preproxy_node) or ""
 			to_node_group = (sub_cfg.chain_proxy == "2") and valid_chain_node(sub_cfg.to_node) or ""
+			outbound_iface_group = (sub_cfg.chain_proxy == "3") and sub_cfg.outbound_iface or ""
+			chain_node_type = (outbound_iface_group ~= "") and "iface" or chain_node_type
 		end
 		for _, vv in ipairs(list) do
 			local cfgid = uci:section(appname, "nodes", api.gen_short_uuid())
@@ -1941,6 +2204,9 @@ local function update_node(manual)
 						elseif to_node_group ~= "" then
 							uci:set(appname, cfgid, "chain_proxy", "2")
 							uci:set(appname, cfgid, "to_node", to_node_group)
+						elseif outbound_iface_group ~= "" then
+							uci:set(appname, cfgid, "chain_proxy", "3")
+							uci:set(appname, cfgid, "outbound_iface", outbound_iface_group)
 						end
 					end		
 				end
@@ -2001,7 +2267,7 @@ local function parse_link(raw, add_mode, group, sub_cfg)
 		if sub_cfg then
 			cfgid = sub_cfg[".name"]
 		end
-		local nodes, szType
+		local nodes, szType, clashTable
 		local node_list = {}
 		-- ssd appear to be in this format, starting with ssd://.
 		if raw:find('ssd://') then
@@ -2022,11 +2288,45 @@ local function parse_link(raw, add_mode, group, sub_cfg)
 			end
 			nodes = servers
 		else
-			-- Formats other than ssd
-			if add_mode == "1" then
-				nodes = split(raw, "\n")
+			-- Try parseYAML, if success, is clash.
+			local yamlTable = lyaml.load(raw)
+			if yamlTable and type(yamlTable) == "table" then
+				-- clash
+				szType = "clash"
+				clashTable = yamlTable
 			else
-				nodes = split(base64Decode(raw):gsub("\r\n", "\n"), "\n")
+				-- Formats other than ssd
+				if add_mode == "1" then
+					nodes = split(raw, "\n")
+				else
+					nodes = split(base64Decode(raw):gsub("\r\n", "\n"), "\n")
+				end
+			end
+		end
+
+		function nodeFilter(node)
+			if node then
+				if node.error_msg then
+					log(2, i18n.translatef("Discard node: %s, Reason:", node.remarks) .. " " .. node.error_msg)
+				elseif not node.type then
+					log(2, i18n.translatef("Discard node: %s, Reason:", node.remarks) .. " " .. i18n.translatef("No usable binary was found."))
+				elseif (add_mode == "2" and is_filter_keyword(sub_cfg, node.remarks)) or not node.address or node.remarks == "NULL" or node.address == "127.0.0.1" or
+						(not datatypes.hostname(node.address) and not (api.is_ip(node.address))) then
+					log(2, i18n.translatef("Discard filter nodes: %s type node %s", node.type, node.remarks))
+				else
+					tinsert(node_list, node)
+				end
+				if add_mode == "2" then
+					get_subscribe_info(cfgid, node.remarks)
+				end
+			end
+		end
+
+		if szType == "clash" and clashTable then
+			nodes = {}
+			local clashNodes = processClashData(clashTable, add_mode, group, sub_cfg)
+			for _, v in ipairs(clashNodes) do
+				nodeFilter(v)
 			end
 		end
 
@@ -2052,21 +2352,7 @@ local function parse_link(raw, add_mode, group, sub_cfg)
 						log(2, i18n.translatef("Skip unknown types:") .. " " .. szType)
 					end
 					-- log(2, result)
-					if result then
-						if result.error_msg then
-							log(2, i18n.translatef("Discard node: %s, Reason:", result.remarks) .. " " .. result.error_msg)
-						elseif not result.type then
-							log(2, i18n.translatef("Discard node: %s, Reason:", result.remarks) .. " " .. i18n.translatef("No usable binary was found."))
-						elseif (add_mode == "2" and is_filter_keyword(sub_cfg, result.remarks)) or not result.address or result.remarks == "NULL" or result.address == "127.0.0.1" or
-								(not datatypes.hostname(result.address) and not (api.is_ip(result.address))) then
-							log(2, i18n.translatef("Discard filter nodes: %s type node %s", result.type, result.remarks))
-						else
-							tinsert(node_list, result)
-						end
-						if add_mode == "2" then
-							get_subscribe_info(cfgid, result.remarks)
-						end
-					end
+					nodeFilter(result)
 				end, function (err)
 					--log(2, err)
 					log(2, v, i18n.translatef("Parsing error, skip this node."))
