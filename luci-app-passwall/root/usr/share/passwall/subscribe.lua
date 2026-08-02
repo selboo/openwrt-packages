@@ -1069,6 +1069,10 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 					result.reality_publicKey = params.pbk or nil
 					result.reality_shortId = params.sid or nil
 				end
+				if params.ech and params.ech ~= "" then
+					result.ech = "1"
+					result.ech_config = params.ech
+				end
 				result.tls_pinSHA256 = params.pcs
 				result.tls_CertByName = params.vcn
 				result.tls_allowInsecure = params.allowinsecure or params.allowInsecure or params.insecure
@@ -1558,7 +1562,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			end
 			if params.security == "tls" or params.security == "reality" then
 				result.tls = "1"
-				result.tls_serverName = params.sni
+				result.tls_serverName = params.sni or params.peer
 				result.alpn = params.alpn
 				if params.fp and params.fp ~= "" then
 					result.utls = "1"

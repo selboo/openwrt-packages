@@ -70,6 +70,7 @@ function index()
 	entry({"admin", "services", appname, "get_now_use_node"}, call("get_now_use_node")).leaf = true
 	entry({"admin", "services", appname, "get_redir_log"}, call("get_redir_log")).leaf = true
 	entry({"admin", "services", appname, "get_socks_log"}, call("get_socks_log")).leaf = true
+	entry({"admin", "services", appname, "get_acl_log"}, call("get_acl_log")).leaf = true
 	entry({"admin", "services", appname, "get_log"}, call("get_log")).leaf = true
 	entry({"admin", "services", appname, "clear_log"}, call("clear_log")).leaf = true
 	entry({"admin", "services", appname, "index_status"}, call("index_status")).leaf = true
@@ -103,6 +104,7 @@ function index()
 	for com, _ in pairs(coms) do
 		entry({"admin", "services", appname, "check_" .. com}, call("com_check", com)).leaf = true
 		entry({"admin", "services", appname, "update_" .. com}, call("com_update", com)).leaf = true
+		entry({"admin", "services", appname, "version_" .. com}, call("com_version", com)).leaf = true
 	end
 
 	--[[Backup]]
@@ -112,6 +114,8 @@ function index()
 
 	--[[geoview]]
 	entry({"admin", "services", appname, "geo_view"}, call("geo_view")).leaf = true
+
+	entry({"admin", "services", appname, "fetch_certsha256"}, call("fetch_certsha256")).leaf = true
 end
 
 local function http_write_json(content)
@@ -256,6 +260,18 @@ function get_socks_log()
 	local path = "/tmp/etc/passwall2/SOCKS_" .. name .. ".log"
 	if nixio.fs.access(path) then
 		local content = luci.sys.exec("tail -n 5000 ".. path)
+		content = content:gsub("\n", "<br />")
+		http.write(content)
+	else
+		http.write(string.format("<script>alert('%s');window.close();</script>", i18n.translate("Not enabled log")))
+	end
+end
+
+function get_acl_log()
+	local id = http.formvalue("id")
+	local path = "/tmp/log/passwall2_acl_" .. id .. ".log"
+	if nixio.fs.access(path) then
+		local content = luci.sys.exec("tail -n 5000 '" .. path .. "'")
 		content = content:gsub("\n", "<br />")
 		http.write(content)
 	else
@@ -699,6 +715,11 @@ function com_update(comname)
 	http_write_json(json)
 end
 
+function com_version(comname)
+	local version = api.get_app_version(comname)
+	http_write_json_ok(version)
+end
+
 local backup_files = {
 	"/etc/config/passwall2",
 	"/etc/config/passwall2_server",
@@ -932,4 +953,18 @@ function flush_set()
 	if redirect == "1" then
 		http.redirect(api.url("log"))
 	end
+end
+
+function fetch_certsha256()
+	local id = http.formvalue("id") or ""
+	local address = (id ~= "") and uci:get(appname, id, "address") or ""
+	local port = (id ~= "") and uci:get(appname, id, "port") or 0
+	local sni = (id ~= "") and uci:get(appname, id, "tls_serverName") or ""
+	sni = (sni ~= "") and sni or address
+	if address == "" or port == 0 then
+		http_write_json_error()
+		return
+	end
+	local data = api.fetch_cert_sha256(address, port, sni, 5)
+	http_write_json(data ~= "" and { code = 1, data = data } or { code = 0 })
 end
