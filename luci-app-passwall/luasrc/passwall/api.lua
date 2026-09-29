@@ -13,16 +13,17 @@ jsonc = require "luci.jsonc"
 i18n = require "luci.i18n"
 
 appname = "passwall"
-curl_args = { "-skfL", "--connect-timeout 3", "--retry 3" }
+curl_args = { "-skfL", "--connect-timeout 3", "--retry 3", "-H 'Accept: */*'" }
 command_timeout = 300
 OPENWRT_ARCH = nil
 DISTRIB_ARCH = nil
 OPENWRT_BOARD = nil
 
-LOCK_PREFIX = "/tmp/lock/passwall"
-LOG_FILE = "/tmp/log/passwall.log"
-TMP_PATH = "/tmp/etc/passwall"
+LOCK_PREFIX = "/var/lock/" .. c_config
+LOG_FILE = "/tmp/log/" .. c_config .. ".log"
+TMP_PATH = "/tmp/etc/" .. c_config
 CACHE_PATH = TMP_PATH .. "_tmp"
+S_TMP_PATH = "/tmp/etc/" .. s_config
 TMP_IFACE_PATH = TMP_PATH .. "/iface"
 
 function log(...)
@@ -162,12 +163,16 @@ function sh_uci_commit(config)
 	exec_call(string.format("uci -q commit %s", config))
 end
 
+function del_cache_var(key)
+	sys.call(string.format('. /usr/share/passwall2/utils.sh ; del_cache_var "%s"', key))
+end
+
 function set_cache_var(key, val)
-	sys.call(string.format('. /usr/share/passwall/utils.sh ; set_cache_var %s "%s"', key, val))
+	sys.call(string.format('. /usr/share/passwall/utils.sh ; set_cache_var "%s" "%s"', key, val))
 end
 
 function get_cache_var(key)
-	local val = sys.exec(string.format('. /usr/share/passwall/utils.sh ; echo -n $(get_cache_var %s)', key))
+	local val = sys.exec(string.format('. /usr/share/passwall/utils.sh ; echo -n $(get_cache_var "%s")', key))
 	if val == "" then val = nil end
 	return val
 end
@@ -192,16 +197,19 @@ function exec_call(cmd)
 end
 
 function base64Decode(text)
-	if not text then return '' end
-	local encoded = text:gsub("%z", ""):gsub("%c", ""):gsub("_", "/"):gsub("-", "+")
+	if type(text) ~= "string" then return "" end
+	local encoded = text:gsub("%z", ""):gsub("%c", ""):gsub("_", "/"):gsub("-", "+"):gsub("=+$", "")
+	if encoded == "" then return text end
+	if not encoded:match("^[A-Za-z0-9+/]*$") then return text end
 	local mod4 = #encoded % 4
-	encoded = encoded .. string.sub('====', mod4 + 1)
-	local result = nixio.bin.b64decode(encoded)
-	if result then
-		return result:gsub("%z", "")
-	else
-		return text
-	end
+	if mod4 == 1 then return text end
+	local padded = encoded .. string.rep("=", (4 - mod4) % 4)
+	local result = nixio.bin.b64decode(padded)
+	if not result then return text end
+	-- Verify that the normalized input is canonical Base64.
+	local reencoded = nixio.bin.b64encode(result):gsub("=+$", "")
+	if reencoded ~= encoded then return text end
+	return (result:gsub("%z", ""))
 end
 
 function base64Encode(text)
@@ -257,7 +265,7 @@ end
 
 function curl_proxy(url, file, args)
 	--使用代理
-	local socks_server = get_cache_var("GLOBAL_TCP_SOCKS_server")
+	local socks_server = get_cache_var("GLOBAL_SOCKS_server")
 	if socks_server and socks_server ~= "" then
 		if not args then args = {} end
 		local tmp_args = clone(args)
@@ -564,7 +572,7 @@ function get_valid_nodes()
 	local nodes = {}
 	local default_nodes = {}
 	local other_nodes = {}
-	uci:foreach(c_config, "nodes", function(e)
+	uci_foreach_c("nodes", function(e)
 		e.id = e[".name"]
 		if e.type and e.remarks then
 			local type_name = e.type
@@ -637,7 +645,7 @@ function get_node_list()
 		socks_list = {},
 		normal_list = {},
 	}
-	uci:foreach(c_config, "socks", function(s)
+	uci_foreach_c("socks", function(s)
 		if s.enabled == "1" and s.node then
 			node_list.socks_list[#node_list.socks_list + 1] = {
 				id = s[".name"],
@@ -726,6 +734,29 @@ function get_full_node_remarks(n)
 	return remarks
 end
 
+function get_random_normal_node(exclude_id)
+	local exclude_id_lookup = {}
+	if type(exclude_id) == "table" then
+		for i, v in ipairs(exclude_id) do
+			exclude_id_lookup[v] = true
+		end
+	elseif type(exclude_id) == "string" then
+		exclude_id_lookup[exclude_id] = true
+	end
+	local normal_list = {}
+	for k, e in ipairs(get_valid_nodes()) do
+		if e.node_type == "normal" and not exclude_id_lookup[e[".name"]] then
+			normal_list[#normal_list + 1] = e
+		end
+	end
+	if #normal_list > 0 then
+		math.randomseed(os.time())
+		local num = math.random(1, #normal_list)
+		return normal_list[num]
+	end
+	return nil
+end
+
 function gen_uuid()
 	local uuid = sys.exec("echo -n $(cat /proc/sys/kernel/random/uuid)")
 	return uuid
@@ -784,16 +815,16 @@ function clone(org)
 end
 
 function get_bin_version_cache(file, cmd)
-	sys.call("mkdir -p /tmp/etc/passwall_tmp")
+	sys.call("mkdir -p " .. CACHE_PATH)
 	if fs.access(file) then
 		chmod_755(file)
 		local md5 = sys.exec("echo -n $(md5sum " .. file .. " | awk '{print $1}')")
-		if fs.access("/tmp/etc/passwall_tmp/" .. md5) then
-			return sys.exec("echo -n $(cat /tmp/etc/passwall_tmp/%s)" % md5)
+		if fs.access(CACHE_PATH .. "/" .. md5) then
+			return sys.exec("echo -n $(cat %s)" % { CACHE_PATH .. "/" .. md5 })
 		else
 			local version = sys.exec(string.format("echo -n $(%s %s)", file, cmd))
 			if version and version ~= "" then
-				sys.call("echo '" .. version .. "' > " .. "/tmp/etc/passwall_tmp/" .. md5)
+				sys.call("echo '%s' > %s"  % { version, CACHE_PATH .. "/" .. md5})
 				return version
 			end
 		end
@@ -1354,11 +1385,22 @@ function to_move(app_name,file)
 end
 
 function get_version()
-	local version = sys.exec("opkg list-installed luci-app-passwall 2>/dev/null | awk '{print $3}'")
-	if not version or #version == 0 then
-		version = sys.exec("apk list luci-app-passwall 2>/dev/null | awk '/installed/ {print $1}' | cut -d'-' -f4-")
+	local version
+	local version_file = CACHE_PATH .. "/passwall_version"
+	sys.call("mkdir -p " .. CACHE_PATH)
+	if fs.access(version_file) then
+		version = fs.readfile(version_file)
+	else
+		version = sys.exec("opkg list-installed luci-app-passwall 2>/dev/null | awk '{print $3}'")
+		if not version or version == "" then
+			version = sys.exec("apk list luci-app-passwall 2>/dev/null | awk '/installed/ {print $1}' | cut -d'-' -f4-")
+		end
+		version = (version or ""):match("^%s*(.-)%s*$")
+		if version ~= "" then
+			fs.writefile(version_file, version)
+		end
 	end
-	return (version or ""):gsub("\n", ""):match("^([^-]+)")
+	return version:match("^([^-]+)") or ""
 end
 
 function to_check_self()
@@ -1410,28 +1452,15 @@ function set_default_cbi()
 	if true then
 		--Map
 		local Map = cbi.Map
-
-		if not Map._passwall_default_cbi then
-			Map._passwall_default_cbi = true
-			local original_parse = Map.parse
-			function Map.parse(self, ...)
-				if is_js_luci() then
-					apply_redirect(self)
-					local old = self.on_after_save
-					self.on_after_save = function(map)
-						if old then old(map) end
-						map:set("@global[0]", "timestamp", os.time())
-					end
-				end
-				return original_parse(self, ...)
-			end
-		end
-
-		local original_init = Map.__init__
+		local default_init = Map.__init__
 		function Map.__init__(self, config, ...)
 			if not config then config = c_config end
-			original_init(self, config, ...)
+			default_init(self, config, ...)
 			self.api = require "luci.passwall.api"
+			if is_js_luci() == true then
+				self.apply_on_parse = false
+				self.is_js_luci = true
+			end
 		end
 		function Map.foreach(self, stype, func)
 			self.uci:foreach(self.config, stype, func)
@@ -1470,9 +1499,9 @@ function set_default_cbi()
 	if true then
 		--TextValue
 		local TextValue = cbi.TextValue
-		local original_init = TextValue.__init__
+		local default_init = TextValue.__init__
 		function TextValue.__init__(self, ...)
-			original_init(self, ...)
+			default_init(self, ...)
 			self.template  = appname .. "/cbi/tvalue"
 		end
 	end
@@ -1495,11 +1524,134 @@ function set_default_cbi()
 			return cbi.AbstractValue.write(self, section, new_val)
 		end
 	end
+	if true then
+		--HideValue
+		local HideValue = util.class(cbi.DummyValue)
+		function HideValue.__init__(self, ...)
+			cbi.DummyValue.__init__(self, ...)
+			self.template = self.map:template_path("/cbi/hidevalue")
+			self.value = "1"
+		end
+		cbi.HideValue = HideValue
+	end
+end
+
+function set_type_cbi(s)
+	local cbi = require "luci.cbi"
+	local s1 = s.parent
+	function s.option(s_self, class, option, ...)
+		local obj  = class(s_self.map, s_self, option, ...)
+		obj.config_option = option
+		obj.option_prefix = s_self.option_prefix
+		obj.option = s_self.option_prefix .. option
+		obj.cfgvalue = function(self, section)
+			local v
+			if self.rewrite_option then
+				v = self.map:get(section, self.rewrite_option)
+			else
+				v = self.map:get(section, self.config_option)
+			end
+			if util.instanceof(self, cbi.MultiValue) then
+				if v and self.cast == "table" then
+					return table.concat(v, " ")
+				end
+			end
+			return v
+		end
+		obj.write = function(self, section, value)
+			if s1.fields["type"]:formvalue(s_self.section) == s_self.type_name then
+				local new_val = value
+				if util.instanceof(self, cbi.DynamicList) then
+					local new_t = {}
+					if type(value) == "table" then
+						new_t = table_remove_duplicates(value)
+					else
+						new_t = { value }
+					end
+					if self.cast == "string" then
+						new_val = table.concat(new_t, " ")
+					else
+						new_val = new_t
+					end
+				end
+				if util.instanceof(self, cbi.MultiValue) then
+					local new_t = {}
+					if type(value) == "table" then
+						new_t = table_remove_duplicates(value)
+					else
+						string.gsub(value, '[^' .. " " .. ']+', function(v)
+							new_t[#new_t + 1] = v
+						end)
+					end
+					if self.cast == "string" then
+						new_val = table.concat(new_t, " ")
+					else
+						new_val = new_t
+					end
+				end
+				if self.rewrite_option then
+					self.map:set(section, self.rewrite_option, new_val)
+				else
+					self.map:set(section, self.config_option, new_val)
+				end
+			end
+		end
+		obj.remove = function(self, section)
+			if s1.fields["type"]:formvalue(s_self.section) == s_self.type_name then
+				if self.rewrite_option then
+					self.map:del(section, self.rewrite_option)
+				else
+					self.map:del(section, self.config_option)
+				end
+			end
+		end
+		obj.deplist2json = function(self, section, deplist)
+			local deps, i, d = { }
+			if type(self.deps) == "table" then
+				if not next(self.deps) then
+					self:depends({ type = s.type_name })
+				end
+				local list = deplist or self.deps
+				for i, d in ipairs(list) do
+					if s.type_name and not d["type"] then
+						d["type"] = s.type_name
+					end
+					local a, k, v = { }
+					for k, v in pairs(d) do
+						if k:find("!", 1, true) then
+							a[k] = v
+						elseif k:find("^", 1, true) then
+							a[k:sub(2)] = v
+						elseif k:find(".", 1, true) then
+							a['cbid%s' % k] = v
+						elseif s_self.fields[k] then
+							a['cbid.%s.%s.%s' %{ self.config, section, s_self.fields[k].option }] = v
+						else
+							a['cbid.%s.%s.%s' %{ self.config, section, k }] = v
+						end
+					end
+					deps[#deps+1] = a
+				end
+			end
+			return util.serialize_json(deps)
+		end
+		s_self:append(obj)
+		s_self.fields[option] = obj
+		return obj
+	end
+end
+
+function type_cbi_section(s, s2)
+	for i, v in ipairs(s2.children) do
+		local o = s2.children[i]
+		o.section = s
+		s:append(o)
+		s.fields[o.option] = o
+	end
 end
 
 function return_map(map)
 	local cbi = require "luci.cbi"
-	local api = require "luci.passwall.api"
 	if true then
 		-- header
 		local header = cbi.Template(appname .. "/cbi/header")
@@ -1513,103 +1665,6 @@ function return_map(map)
 		map:append(footer)
 	end
 	return map
-end
-
-function luci_types(id, m, s, type_name, option_prefix)
-	local cbi = require "luci.cbi"
-	local fv_type
-	local field_type = s.fields["type"]
-	if field_type then
-		fv_type = field_type:formvalue(id)
-	end
-	local rewrite_option_table = {}
-	for key, value in pairs(s.fields) do
-		if key:find(option_prefix) == 1 then
-			if not s.fields[key].not_rewrite then
-				if s.fields[key].rewrite_option then
-					if not rewrite_option_table[s.fields[key].rewrite_option] then
-						rewrite_option_table[s.fields[key].rewrite_option] = 1
-					else
-						rewrite_option_table[s.fields[key].rewrite_option] = rewrite_option_table[s.fields[key].rewrite_option] + 1
-					end
-				end
-
-				s.fields[key].cfgvalue = function(self, section)
-					-- 添加自定义 custom_cfgvalue 属性，如果有自定义的 custom_cfgvalue 函数，则使用自定义的 cfgvalue 逻辑
-					if self.custom_cfgvalue then
-						return self:custom_cfgvalue(section)
-					else
-						if self.rewrite_option then
-							return m:get(section, self.rewrite_option)
-						else
-							if self.option:find(option_prefix) == 1 then
-								return m:get(section, self.option:sub(1 + #option_prefix))
-							end
-						end
-					end
-				end
-				s.fields[key].write = function(self, section, value)
-					if s.fields["type"]:formvalue(id) == type_name then
-						-- 添加自定义 custom_write 属性，如果有自定义的 custom_write 函数，则使用自定义的 write 逻辑
-						if self.custom_write then
-							self:custom_write(section, value)
-						else
-							local new_val = value
-							if util.instanceof(self, cbi.DynamicList) then
-								local new_t = {}
-								if type(value) == "table" then
-									new_t = table_remove_duplicates(value)
-								else
-									new_t = { value }
-								end
-								if self.cast == "string" then
-									new_val = table.concat(new_t, " ")
-								else
-									new_val = new_t
-								end
-							end
-							if self.rewrite_option then
-								m:set(section, self.rewrite_option, new_val)
-							else
-								if self.option:find(option_prefix) == 1 then
-									m:set(section, self.option:sub(1 + #option_prefix), new_val)
-								end
-							end
-						end
-					end
-				end
-				s.fields[key].remove = function(self, section)
-					if s.fields["type"]:formvalue(id) == type_name then
-						-- 添加自定义 custom_remove 属性，如果有自定义的 custom_remove 函数，则使用自定义的 remove 逻辑
-						if self.custom_remove then
-							self:custom_remove(section)
-						else
-							if self.rewrite_option and rewrite_option_table[self.rewrite_option] == 1 then
-								m:del(section, self.rewrite_option)
-							else
-								if self.option:find(option_prefix) == 1 then
-									m:del(section, self.option:sub(1 + #option_prefix))
-								end
-							end
-						end
-					end
-				end
-			end
-
-			local deps = s.fields[key].deps
-			if #deps > 0 then
-				for index, value in ipairs(deps) do
-					deps[index]["type"] = type_name
-				end
-			else
-				s.fields[key]:depends({ type = type_name })
-			end
-
-			if fv_type and fv_type ~= type_name then
-				s.fields[key].rmempty = true
-			end
-		end
-	end
 end
 
 function get_std_domain(domain)
@@ -1690,37 +1745,6 @@ function format_go_time(input, default)
 	if m > 0 then result = result .. m .. "m" end
 	if s > 0 or result == "" then result = result .. s .. "s" end
 	return result
-end
-
-function apply_redirect(m)
-	local tmp_uci_file = "/etc/config/" .. c_config .. "_redirect"
-	if m.redirect and m.redirect ~= "" then
-		if fs.access(tmp_uci_file) then
-			local redirect
-			for line in io.lines(tmp_uci_file) do
-				redirect = line:match("option%s+url%s+['\"]([^'\"]+)['\"]")
-				if redirect and redirect ~= "" then break end
-			end
-			if redirect and redirect ~= "" then
-				sys.call("/bin/rm -f " .. tmp_uci_file)
-				luci.http.redirect(redirect)
-			end
-		else
-			fs.writefile(tmp_uci_file, "config redirect\n")
-		end
-		local old = m.on_after_save
-		m.on_after_save = function(self)
-			if old then
-				old(self)
-			end
-			local redirect = self.redirect
-			if redirect and redirect ~= "" then
-				uci:set(c_config .. "_redirect", "@redirect[0]", "url", redirect)
-			end
-		end
-	else
-		sys.call("/bin/rm -f " .. tmp_uci_file)
-	end
 end
 
 function match_node_rule(name, rule)
@@ -1896,6 +1920,25 @@ function fetch_cert_sha256(host, port, sni, timeout, http3)
 	return fp:upper()
 end
 
+function sha256_xray_sb(str)
+	local decoded = base64Decode(str)
+	if decoded ~= str and #decoded == 32 then return str end
+	local hex = str:gsub(":", "")
+	if #hex ~= 64 or not hex:match("^[A-Fa-f0-9]+$") then return str end
+	local binary = hex:gsub("%x%x", function(byte)
+		return string.char(tonumber(byte, 16))
+	end)
+	return base64Encode(binary)
+end
+
+function sha256_sb_xray(str)
+	local binary = base64Decode(str)
+	if binary == str or #binary ~= 32 then return str end
+	return (binary:gsub(".", function(byte)
+		return string.format("%02X", string.byte(byte))
+	end))
+end
+
 function vps_domain_exclude(domain)
 	domain = trim(domain)
 	if domain == "" then return true end
@@ -2044,4 +2087,45 @@ function table_remove_duplicates(t)
 		end
 	end
 	return new_t
+end
+
+function gen_wireguard_key()
+	if sys.call("command -v wg >/dev/null") == 0 then
+		local private_key = sys.exec('echo -n $(wg genkey)')
+		local public_key = sys.exec('echo -n $(echo "%s" | wg pubkey)' % private_key)
+		return {
+			private_key = private_key,
+			public_key = public_key
+		}
+	end
+	local xray = finded_com("xray")
+	if xray then
+		local result = sys.exec(xray .. " wg | awk -F ': ' '{print $2}'")
+		local s = split(result, "\n")
+		local private_key = s[1]
+		local public_key = s[2]
+		return {
+			private_key = private_key,
+			public_key = public_key
+		}
+	end
+	local sb = finded_com("sing-box")
+	if sb then
+		local result = sys.exec(sb .. " generate wg-keypair | awk '{print $2}'")
+		local s = split(result, "\n")
+		local private_key = s[1]
+		local public_key = s[2]
+		return {
+			private_key = private_key,
+			public_key = public_key
+		}
+	end
+end
+
+function get_socks_port_by_cache(node_id)
+	return get_cache_var("node_%s_socks_port" % { node_id })
+end
+
+function set_socks_port_to_cache(node_id, v)
+	set_cache_var("node_%s_socks_port" % { node_id }, v)
 end

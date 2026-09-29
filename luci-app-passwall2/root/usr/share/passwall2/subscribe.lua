@@ -29,7 +29,6 @@ local has_ss_rust = api.is_finded("sslocal")
 local has_ssr = api.is_finded("ssr-local") and api.is_finded("ssr-redir")
 local has_singbox = api.finded_com("sing-box")
 local has_xray = api.finded_com("xray")
-local has_hysteria2 = api.finded_com("hysteria")
 local DEFAULT_ALLOWINSECURE = true
 local DEFAULT_FILTER_KEYWORD_MODE = uci_get("@global_subscribe[0]", "filter_keyword_mode") or "0"
 local DEFAULT_FILTER_KEYWORD_DISCARD_LIST = uci_get("@global_subscribe[0]", "filter_discard_list") or {}
@@ -39,12 +38,11 @@ local DEFAULT_SS_TYPE = api.get_core("ss_type", {{has_ss_rust,"shadowsocks-rust"
 local DEFAULT_TROJAN_TYPE = api.get_core("trojan_type", {{has_singbox,"sing-box"},{has_xray,"xray"}})
 local DEFAULT_VMESS_TYPE = api.get_core("vmess_type", {{has_xray,"xray"},{has_singbox,"sing-box"}})
 local DEFAULT_VLESS_TYPE = api.get_core("vless_type", {{has_xray,"xray"},{has_singbox,"sing-box"}})
-local DEFAULT_HYSTERIA2_TYPE = api.get_core("hysteria2_type", {{has_hysteria2,"hysteria2"},{has_singbox,"sing-box"},{has_xray,"xray"}})
+local DEFAULT_HYSTERIA2_TYPE = api.get_core("hysteria2_type", {{has_singbox,"sing-box"},{has_xray,"xray"}})
 local core_has = {
 	["xray"] = has_xray,
 	["sing-box"] = has_singbox,
 	["shadowsocks-rust"] = has_ss_rust,
-	["hysteria2"] = has_hysteria2
 }
 -- Determine whether to filter node keywords
 local function is_filter_keyword(sub_cfg, value)
@@ -535,6 +533,7 @@ local function parseClashNode(node, add_mode, group, sub_cfg)
 		result = set_ss_implementation(sub_ss_type, result)
 		if not result then return nil end
 		result.method = node.cipher
+		result.ss_method = node.cipher
 		result.password = node.password
 		if node.plugin == "obfs" then
 			result.plugin = "obfs-local"
@@ -761,7 +760,7 @@ local function parseClashNode(node, add_mode, group, sub_cfg)
 			result.type = 'sing-box'
 			result.protocol = "anytls"
 		else
-			log(2, i18n.translatef("Skip the %s node because the %s core program is not installed.", "AnyTLS", "AnyTLS", "Sing-Box 1.12"))
+			log(2, i18n.translatef("Skip the %s node because the %s core program is not installed.", "AnyTLS", "Sing-Box 1.12"))
 			return nil
 		end
 		result.password = node.password
@@ -784,6 +783,25 @@ local function parseClashNode(node, add_mode, group, sub_cfg)
 		if node["disable-reuse"] then
 			result.anytls_disable_reuse = "1"
 		end
+	elseif node.type == 'snell' then
+		if has_singbox then
+			result.type = 'sing-box'
+			result.protocol = "snell"
+		else
+			log(2, i18n.translatef("Skip the %s node because the %s core program is not installed.", "Snell", "Sing-Box 1.14"))
+			return nil
+		end
+		result.password = node.password
+		result.snell_psk = node.psk
+		result.snell_version = node.version or "4"
+		if result.snell_version == "4" then
+			local obfs_opts = node["obfs-opts"] or {}
+			result.snell_obfs_mode = obfs_opts.mode or "none"
+			result.snell_obfs_host = obfs_opts.host
+		else
+			result.snell_mode = "default"
+		end
+		result.snell_reuse = node.reuse and "1" or "0"
 	end
 	if not result.remarks or result.remarks == "" then
 		if result.address and result.port then
@@ -1114,6 +1132,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 				(_method == "xchacha20-poly1305" and "xchacha20-ietf-poly1305") or _method
 
 			result.method = method
+			result.ss_method = method
 			result.password = password
 			result.tcp_fast_open = params.tfo
 			result.use_finalmask = (params.fm and params.fm ~= "") and "1" or nil
@@ -1482,6 +1501,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 		result.port = content.port
 		result.password = content.password
 		result.method = content.encryption
+		result.ss_method = content.encryption
 		result.plugin = content.plugin
 		result.plugin_opts = content.plugin_options
 		result.group = content.airport
@@ -1664,7 +1684,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			result.type = 'sing-box'
 			result.protocol = "hysteria"
 		else
-			log(2, i18n.translatef("Skip the %s node because the %s core program is not installed.", "Hysteria", "Hysteria", "Sing-Box"))
+			log(2, i18n.translatef("Skip the %s node because the %s core program is not installed.", "Hysteria", "Sing-Box"))
 			return nil
 		end
 
@@ -1768,8 +1788,6 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			result.protocol = "hysteria2"
 			result.use_finalmask = (params.fm and params.fm ~= "") and "1" or nil
 			result.finalmask = (params.fm and params.fm ~= "") and api.base64Encode(params.fm) or nil
-		elseif has_hysteria2 then
-			result.type = "Hysteria2"
 		else
 			log(2, i18n.translatef("Skipping the %s node is due to incompatibility with the %s core program or incorrect node usage type settings.", "Hysteria2", "Hysteria2"))
 			return nil
@@ -1779,7 +1797,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			result.type = 'sing-box'
 			result.protocol = "tuic"
 		else
-			log(2, i18n.translatef("Skip the %s node because the %s core program is not installed.", "Tuic", "Tuic", "Sing-Box"))
+			log(2, i18n.translatef("Skip the %s node because the %s core program is not installed.", "Tuic", "Sing-Box"))
 			return nil
 		end
 
@@ -1837,7 +1855,7 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			result.type = 'sing-box'
 			result.protocol = "anytls"
 		else
-			log(2, i18n.translatef("Skip the %s node because the %s core program is not installed.", "AnyTLS", "AnyTLS", "Sing-Box 1.12"))
+			log(2, i18n.translatef("Skip the %s node because the %s core program is not installed.", "AnyTLS", "Sing-Box 1.12"))
 			return nil
 		end
 
@@ -1963,6 +1981,62 @@ local function processData(szType, content, add_mode, group, sub_cfg)
 			result.naive_quic = "1"
 			result.naive_congestion_control = params.congestion_control or "bbr"
 		end
+	elseif szType == "snell" then
+		if has_singbox then
+			result.type = 'sing-box'
+			result.protocol = "snell"
+		else
+			log(2, i18n.translatef("Skip the %s node because the %s core program is not installed.", "Snell", "Sing-Box 1.14"))
+			return nil
+		end
+
+		local alias = ""
+		if content:find("#") then
+			local idx_sp = content:find("#")
+			alias = content:sub(idx_sp + 1, -1)
+			content = content:sub(0, idx_sp - 1)
+		end
+		result.remarks = UrlDecode(alias)
+		local Info = content
+		if content:find("@") then
+			local info = split(content, "@")
+			result.snell_psk = UrlDecode(info[1])
+			Info = info[2]
+		end
+		Info = (Info or ""):gsub("/%?", "?")
+		local query = split(Info, "%?")
+		local host_port = query[1]
+		local params = {}
+		for _, v in pairs(split(query[2], '&')) do
+			local s = v:find("=", 1, true)
+			if s and s > 1 then
+				params[UrlDecode(v:sub(1, s - 1)):lower()] = UrlDecode(v:sub(s + 1))
+			end
+		end
+		-- [2001:4860:4860::8888]:443
+		-- 8.8.8.8:443
+		result.port = "443"
+		if host_port:find(":") then
+			local sp = split(host_port, ":")
+			result.port = sp[#sp]
+			if api.is_ipv6addrport(host_port) then
+				result.address = api.get_ipv6_only(host_port)
+			else
+				result.address = sp[1]
+			end
+		else
+			result.address = host_port
+		end
+		result.snell_psk = params.psk or result.snell_psk
+		result.password = params.userkey
+		result.snell_version = params.version or "4"
+		if result.snell_version == "4" then
+			result.snell_obfs_mode = params.obfs or "none"
+			result.snell_obfs_host = params['obfs-host'] or params.obfs_host
+		else
+			result.snell_mode = params.mode or "default"
+		end
+		result.snell_reuse = (params.reuse == "1") and "1" or "0"
 	else
 		log(2, i18n.translatef("%s type node subscriptions are not currently supported, skip this node.", szType))
 		return nil
@@ -1980,7 +2054,7 @@ end
 local function curl(url, file, ua, mode, hwid)
 	if not url or url == "" then return 22, 404 end
 	local curl_args = {
-		"-fskL", "-w %{http_code}", "--retry 3", "--connect-timeout 3", "-H 'Accept-Encoding: identity'"
+		"-fskL", "-w %{http_code}", "--retry 3", "--connect-timeout 3", "-H 'Accept: */*'", "-H 'Accept-Encoding: identity'"
 	}
 	if ua and ua ~= "" and ua ~= "curl" then
 		ua = (ua == "passwall2") and ("passwall2/" .. api.get_version()) or ua
@@ -2001,7 +2075,7 @@ local function curl(url, file, ua, mode, hwid)
 end
 
 function get_headers()
-	local cache_file = CACHE_PATH .. "/sub_curl_headers"
+	local cache_file = api.CACHE_PATH .. "/sub_curl_headers"
 	if fs.access(cache_file) then
 		return luci.sys.exec("cat " .. cache_file)
 	end

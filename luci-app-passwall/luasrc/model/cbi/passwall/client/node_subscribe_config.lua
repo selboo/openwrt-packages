@@ -92,7 +92,7 @@ o.write = function(self, section, value)
 	if old ~= value then
 		m:foreach("nodes", function(e)
 			if e["group"] and e["group"]:lower() == old:lower() then
-				self:set(e[".name"], "group", value)
+				self.map:set(e[".name"], "group", value)
 			end
 			if e["protocol"] and (e["protocol"] == "_balancing" or e["protocol"] == "_urltest") and e["node_group"] then
 				local gs = ""
@@ -104,7 +104,7 @@ o.write = function(self, section, value)
 					end
 				end
 				gs = api.trim(gs)
-				self:set(e[".name"], "node_group", gs)
+				self.map:set(e[".name"], "node_group", gs)
 			end
 		end)
 	end
@@ -272,9 +272,8 @@ o = s:option(Value, "user_agent", translate("User-Agent"))
 o.default = "passwall"
 o:value("passwall", "PassWall")
 o:value("v2rayN/9.99", "v2rayN")
-o:value("clash.meta", "Clash.Meta")
-o:value("Clash", "Clash")
-o:value("curl", "Curl")
+o:value("clash.meta/v9.99.99", "Clash.Meta")
+o:value("Shadowrocket/9999 CFNetwork/3896.100.1.2.1 Darwin/27.0.0 iPhone19,7", "Shadowrocket")
 o:value("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0", "Edge for Linux")
 o:value("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0", "Edge for Windows")
 

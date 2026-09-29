@@ -1427,6 +1427,12 @@ msgstr "Только для localhost"
 msgid "When selected, it can only be accessed localhost."
 msgstr "Если включено, доступ возможен только с самого роутера."
 
+msgid "Firewall Allow"
+msgstr "Брандмауэр разрешить"
+
+msgid "Source zone"
+msgstr "Зона источника"
+
 msgid "Accept LAN Access"
 msgstr "Разрешить доступ из LAN"
 
@@ -1448,17 +1454,26 @@ msgstr "Удалённый порт"
 msgid "as:"
 msgstr "например:"
 
-msgid "Public key absolute path"
-msgstr "Полный путь к публичному ключу"
+msgid "Path to the certificate file"
+msgstr "Путь к файлу сертификата"
 
-msgid "Private key absolute path"
-msgstr "Полный путь к приватному ключу"
+msgid "Path to the private key file"
+msgstr "Путь к файлу закрытого ключа"
 
 msgid "Can't find this file!"
 msgstr "Файл не найден!"
 
-msgid "Public key and Private key path can not be empty!"
-msgstr "Пути к публичному и приватному ключам не могут быть пустыми!"
+msgid "Certificate and Private key path can not be empty!"
+msgstr "Пути к сертификату и закрытому ключу не могут быть пустыми!"
+
+msgid "Certificate and Private key PEM can not be empty!"
+msgstr "Сертификат и закрытый ключ в формате PEM не могут быть пустыми!"
+
+msgid "Use PEM"
+msgstr "Используйте PEM"
+
+msgid "Use certificate and private key PEM content."
+msgstr "Используйте содержимое сертификата и закрытого ключа в формате PEM."
 
 msgid "Server-Side"
 msgstr "Серверная часть"
@@ -1642,6 +1657,12 @@ msgstr "Сертификат TLS (PEM)"
 
 msgid "Full certificate (chain), PEM format."
 msgstr "Полный сертификат (цепочка), формат PEM."
+
+msgid "TLS Private Key (PEM)"
+msgstr "Закрытый ключ TLS (PEM)"
+
+msgid "Private key in PEM format."
+msgstr "Закрытый ключ в формате PEM."
 
 msgid "Fetch Manually"
 msgstr "Получить вручную"
@@ -2148,8 +2169,8 @@ msgstr "не прокси все %s"
 msgid "Use the %s node [%s]"
 msgstr "Использовать %s сервер [%s]"
 
-msgid "Using a node that is different from the global configuration, DNS has been forcibly redirected to a dedicated DNS server."
-msgstr "Используется сервер, отличный от глобальной настройки: DNS принудительно перенаправлен на выделенный DNS-сервер."
+msgid "DNS will redirected to the dedicated DNS server [%s]."
+msgstr "DNS будет перенаправлен на выделенный DNS-сервер [%s]."
 
 msgid "Add direct DNS to %s: %s"
 msgstr "Добавление прямого DNS в %s: %s"
@@ -2169,23 +2190,8 @@ msgstr "Удаление правил %s завершено."
 msgid "%s firewall rules load complete!"
 msgstr "Загрузка правил фаервола %s завершена!"
 
-msgid "Socks switch detection: Unknown error."
-msgstr "Проверка переключения SOCKS: неизвестная ошибка."
-
-msgid "Socks switch detection: Unable to connect to the network. Please check if the network is working properly!"
-msgstr "Проверка переключения SOCKS: не удалось подключиться к сети. Пожалуйста, проверьте работоспособность сети!"
-
-msgid "Socks switch detection: Primary node 【%s: [%s]】 is normal. Switch to the primary node!"
-msgstr "Проверка переключения SOCKS: основной сервер 【%s: [%s]】 работает нормально. Переключение на основной сервер!"
-
-msgid "Socks switch detection: %s node switch complete!"
-msgstr "Проверка переключения SOCKS: переключение сервера %s завершено!"
-
-msgid "Socks switch detection: %s 【%s:[%s]】 normal."
-msgstr "Проверка переключения SOCKS: %s 【%s:[%s]】 работает нормально."
-
-msgid "switch to %s test detect!"
-msgstr "Переключение на %s для проверки!"
+msgid "main node"
+msgstr "основной сервер"
 
 msgid "backup node"
 msgstr "резервный сервер"
@@ -2193,14 +2199,35 @@ msgstr "резервный сервер"
 msgid "next backup node"
 msgstr "следующий резервный сервер"
 
-msgid "main node"
-msgstr "основной сервер"
+msgid "Socks switch detection: Port [%s] try %s [%s:%s]."
+msgstr "Обнаружение переключения кабеля: порт [%s], попытка %s [%s:%s]."
 
-msgid "Socks switch detection: %s 【%s:[%s]】 abnormal, %s"
-msgstr "Проверка переключения SOCKS: %s 【%s:[%s]】 не работает, %s"
+msgid "Socks switch detection: Port [%s] [%s:[%s]] normal, switch to this node!"
+msgstr "Обнаружение переключения Socks: порт [%s] [%s:[%s]] в норме, переключение на этот узел!"
 
-msgid "Socks switch detection: %s 【%s:[%s]】 normal, switch to this node!"
-msgstr "Проверка переключения SOCKS: %s 【%s:[%s]】 работает нормально, переключение на этот сервер!"
+msgid "Socks switch detection: Port [%s] node switch complete!"
+msgstr "Обнаружение переключения соединений: переключение узла на порту [%s] завершено!"
+
+msgid "Socks switch detection: Port [%s] [%s:[%s]] abnormal."
+msgstr "Обнаружено переключение Socks: порт [%s] [%s:[%s]] работает некорректно."
+
+msgid "Socks switch detection: Port [%s] all nodes are unavailable!"
+msgstr "Обнаружено переключение коммутатора: порт [%s], все узлы недоступны!"
+
+msgid "Socks switch detection: Port [%s] Unknown error."
+msgstr "Обнаружение переключения разъема: порт [%s], неизвестная ошибка."
+
+msgid "Socks switch detection: Port [%s] Unable to connect to the network. Please check if the network is working properly!"
+msgstr "Обнаружено переключение Socks: порт [%s] — не удалось подключиться к сети. Пожалуйста, проверьте исправность сети!"
+
+msgid "Socks switch detection: Port [%s] Primary node [%s: [%s]] is normal. Switch to the primary node!"
+msgstr "Обнаружено переключение: порт [%s], основной узел [%s: [%s]] — состояние нормальное. Переключение на основной узел!"
+
+msgid "Socks switch detection: Port [%s] [%s:[%s]] normal."
+msgstr "Обнаружение переключения Socks: порт [%s] [%s:[%s]] — норма."
+
+msgid "Socks switch detection: Port [%s] Number of backup nodes: %s"
+msgstr "Обнаружение переключения коммутатора: порт [%s], количество резервных узлов: %s"
 
 msgid "Restart dnsmasq service."
 msgstr "Перезапуск службы dnsmasq."
@@ -2411,6 +2438,9 @@ msgstr "Размер упаковки Gecko (мин)"
 
 msgid "Gecko Packet Size (max)"
 msgstr "Размер упаковки Gecko (макс)"
+
+msgid "Enable UPnP/NAT-PMP port mapping on your gateway to improve hole punching success."
+msgstr "Включите сопоставление портов UPnP/NAT-PMP на вашем шлюзе, чтобы повысить вероятность успешного выполнения операций "пробивания дыр"."
 
 msgid "valid time (hh:mm)"
 msgstr "Время действия (чч:мм)"

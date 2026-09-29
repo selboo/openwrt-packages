@@ -53,10 +53,9 @@ function gen_config(var)
 	local local_http_port = var["local_http_port"]
 	local local_http_username = var["local_http_username"]
 	local local_http_password = var["local_http_password"]
-	local local_tcp_redir_port = var["local_tcp_redir_port"]
-	local local_tcp_redir_address = var["local_tcp_redir_address"] or "0.0.0.0"
-	local local_udp_redir_port = var["local_udp_redir_port"]
-	local local_udp_redir_address = var["local_udp_redir_address"] or "0.0.0.0"
+	local local_redir_port = var["local_redir_port"]
+	local local_redir_address = var["local_redir_address"] or "0.0.0.0"
+	local loglevel = var["loglevel"]
 
 	if api.is_ipv6(server_host) then
 		server_host = api.get_ipv6_only(server_host)
@@ -102,7 +101,10 @@ function gen_config(var)
 				}
 			},
 			locals = {},
-			fast_open = (node.tcp_fast_open and node.tcp_fast_open == "1") and true or false
+			fast_open = (node.tcp_fast_open and node.tcp_fast_open == "1") and true or false,
+			log = {
+				level = (loglevel == "debug") and 1 or 0
+			}
 		}
 		if local_socks_address and local_socks_port then
 			table.insert(config.locals, {
@@ -118,21 +120,13 @@ function gen_config(var)
 				local_port = tonumber(local_http_port)
 			})
 		end
-		if local_tcp_redir_address and local_tcp_redir_port then
+		if local_redir_address and local_redir_port then
 			table.insert(config.locals, {
 				protocol = "redir",
-				mode = "tcp_only",
+				mode = "tcp_and_udp",
 				tcp_redir = var["tcp_tproxy"] and "tproxy" or nil,
-				local_address = local_tcp_redir_address,
-				local_port = tonumber(local_tcp_redir_port)
-			})
-		end
-		if local_udp_redir_address and local_udp_redir_port then
-			table.insert(config.locals, {
-				protocol = "redir",
-				mode = "udp_only",
-				local_address = local_udp_redir_address,
-				local_port = tonumber(local_udp_redir_port)
+				local_address = local_redir_address,
+				local_port = tonumber(local_redir_port)
 			})
 		end
 	end

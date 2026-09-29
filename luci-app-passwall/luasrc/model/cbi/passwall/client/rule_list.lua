@@ -1,16 +1,16 @@
 local api = require "luci.passwall.api"
 local fs = api.fs
 local sys = api.sys
-local uci = api.uci
 local datatypes = api.datatypes
-local path = string.format("/usr/share/%s/rules/", api.c_config)
-local gfwlist_path = "/usr/share/passwall/rules/gfwlist"
-local chnlist_path = "/usr/share/passwall/rules/chnlist"
-local chnroute_path = "/usr/share/passwall/rules/chnroute"
+local path = string.format("/etc/%s/rules/", api.appname)
+local gfwlist_path = "/usr/share/" .. api.appname .. "/rules/gfwlist"
+local chnlist_path = "/usr/share/" .. api.appname .. "/rules/chnlist"
+local chnroute_path = "/usr/share/" .. api.appname .. "/rules/chnroute"
 
 api.set_default_cbi()
 
 m = Map()
+m.apply_on_parse = true
 
 function clean_text(text)
 	local nbsp = string.char(0xC2, 0xA0) -- 不间断空格（U+00A0）
