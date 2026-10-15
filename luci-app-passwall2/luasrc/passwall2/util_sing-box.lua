@@ -9,6 +9,7 @@ local ech_domain = {}
 
 local local_version = api.get_app_version("sing-box"):match("[^v]+")
 local version_ge_1_14_0 = api.compare_versions(local_version, ">=", "1.14.0")
+local version_ge_1_15_0 = api.compare_versions(local_version, ">=", "1.15.0")
 
 local GLOBAL = {
 	DNS_SERVER = {}
@@ -54,10 +55,9 @@ function geo_convert_srs(var)
 	if not fs.access(output_srs_file) and bin then
 		local cmd = string.format("%q -type %q -action convert -input %q -list %q -output %q -lowmem=true",
 			bin, prefix, geo_path, rule_name, output_srs_file)
-		sys.call(cmd)
-		local status = fs.access(output_srs_file) and "success." or "failed!"
-		if status == "failed!" then
-			api.log(0, string.format("  - %s:%s convert to srs %s", prefix, rule_name, status))
+		local code, out = api.exec_call(cmd)
+		if code ~= 0 or not fs.access(output_srs_file) then
+			api.log(0, string.format("  - %s:%s convert to srs %s [%s]", prefix, rule_name, "failed!", out))
 		end
 	end
 end
@@ -248,7 +248,7 @@ function gen_outbound(flag, node, tag, proxy_table)
 				enabled = true,
 				disable_sni = (node.tls_disable_sni == "1") and true or false, -- Do not send the server name in ClientHello.
 				server_name = node.tls_serverName, -- Used to verify the hostname on the returned certificate, unless the settings are insecure. It is also included in ClientHello to support virtual hosts, unless it is an IP address.
-				insecure = node.tls_allowInsecure == "1" or (node.tls_pinSHA256 and node.tls_pinSHA256 ~= ""), -- Accepts any server certificate. (Also compatible with xray's pinnedPeerCertSha256)
+				insecure = node.tls_allowInsecure == "1", -- Accepts any server certificate.
 				alpn = alpn, -- A list of supported application layer protocols, arranged in order of priority. If both peers support ALPN, the protocol selected will be one of these protocols; otherwise, the connection will fail.
 				--max_version = "1.3",
 				fragment = fragment,
@@ -294,6 +294,13 @@ function gen_outbound(flag, node, tag, proxy_table)
 					short_id = node.reality_shortId
 				} or nil
 			}
+			if version_ge_1_15_0 then
+				if node.tls_pinSHA256 and node.tls_pinSHA256 ~= "" then
+					tls.certificate_sha256 = { api.sha256_xray_sb(node.tls_pinSHA256) }
+				end
+			else
+				tls.insecure = node.tls_allowInsecure == "1" or (node.tls_pinSHA256 and node.tls_pinSHA256 ~= "")
+			end
 		end
 
 		local mux = nil
@@ -1488,6 +1495,10 @@ function gen_config(var)
 					end
 				end
 				if to_node then
+					local chained_tag = outbound.tag .. " -> " .. to_node[".name"] .. (to_node.remarks and ":" .. to_node.remarks or "")
+					for _, o in ipairs(outbounds_table) do
+						if o.tag == chained_tag then return chained_tag, last_insert_outbound end
+					end
 					local to_outbound
 					if to_node.type ~= "sing-box" then
 						local tag = to_node[".name"]
@@ -1549,7 +1560,7 @@ function gen_config(var)
 				local outbound, exist
 				if node.protocol == "_urltest" then
 					outbound, exist = gen_urltest_outbound(node)
-					if exist then
+					if exist and not node.chain_proxy then
 						return outbound.tag
 					end
 				elseif node.protocol == "_iface" then
@@ -1583,7 +1594,7 @@ function gen_config(var)
 				end
 				if outbound then
 					local default_outbound_tag, last_insert_outbound = set_outbound_detour(node, outbound, outbounds)
-					table.insert(outbounds, outbound)
+					if not exist then table.insert(outbounds, outbound) end
 					if last_insert_outbound then
 						table.insert(outbounds, last_insert_outbound)
 					end
@@ -2030,7 +2041,7 @@ function gen_config(var)
 				tag = fakedns_tag,
 				type = "fakeip",
 				inet4_range = "198.18.0.0/16",
-				inet6_range = "fc00::/18",
+				inet6_range = "2001:2::/48",
 			})
 
 			if not experimental then
